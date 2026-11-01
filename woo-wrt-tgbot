@@ -1,0 +1,72 @@
+#!/bin/sh /etc/rc.common
+# ============================================================
+# Init script для Telegram-бота (procd-режим)
+# ============================================================
+START=99
+STOP=10
+USE_PROCD=1
+
+BOT_DIR="/etc/telegram_bot"
+WATCHDOG="$BOT_DIR/watchdog.sh"
+DISABLE_FLAG="$BOT_DIR/.bot_disabled"
+
+start_service() {
+    local uptime_sec
+    uptime_sec=$(cut -d'.' -f1 /proc/uptime 2>/dev/null)
+    case "$uptime_sec" in ''|*[!0-9]*) uptime_sec=999 ;; esac
+
+    mkdir -p /tmp/telegram_bot/flags
+
+    if [ "$uptime_sec" -lt 180 ]; then
+        touch /tmp/telegram_bot/flags/first_boot
+
+        if [ -x "$BOT_DIR/boot_notify.sh" ]; then
+            setsid "$BOT_DIR/boot_notify.sh" </dev/null >/dev/null 2>&1 &
+        fi
+
+        if [ -f "$DISABLE_FLAG" ]; then
+            echo "⏸  Бот отключён флагом — автозапуск пропущен" >&2
+            return 0
+        fi
+    else
+        rm -f "$DISABLE_FLAG"
+    fi
+
+    procd_open_instance
+    procd_set_param command /bin/bash "$WATCHDOG"
+    procd_set_param respawn 3600 5 5
+    procd_set_param term_timeout 30
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}
+
+stop_service() {
+    pkill -TERM -f "$BOT_DIR/telegram_bot.sh" 2>/dev/null
+    pkill -TERM -f "$BOT_DIR/event_monitor.sh" 2>/dev/null
+    pkill -TERM -f "hostapd_cli.*-a $BOT_DIR/notify.sh" 2>/dev/null
+    pkill -TERM -f "$BOT_DIR/watchdog.sh" 2>/dev/null
+    pkill -TERM -f "_wifi_monitor_sta_connection" 2>/dev/null
+    sleep 3
+    pkill -9 -f "$BOT_DIR/telegram_bot.sh" 2>/dev/null
+    pkill -9 -f "$BOT_DIR/event_monitor.sh" 2>/dev/null
+    pkill -9 -f "hostapd_cli.*-a $BOT_DIR/notify.sh" 2>/dev/null
+    pkill -9 -f "$BOT_DIR/watchdog.sh" 2>/dev/null
+    pkill -9 -f "_wifi_monitor_sta_connection" 2>/dev/null
+
+    local _pf _sp
+    for _pf in /tmp/telegram_bot/wifi/sta_monitor_*.pid; do
+        [ -f "$_pf" ] || continue
+        _sp=$(cat "$_pf" 2>/dev/null)
+        [ -n "$_sp" ] && kill -9 "$_sp" 2>/dev/null
+        rm -f "$_pf"
+    done
+
+    sleep 1
+    pkill -9 -f "/bin/bash -c.*_wifi_monitor_sta_connection" 2>/dev/null
+}
+
+reload_service() {
+    stop
+    start
+}
