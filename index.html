@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Поддержать woo-wrt-tgbot</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #0d1117; color: #c9d1d9; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+        .container { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 30px; max-width: 600px; width: 100%; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+        h1 { color: #58a6ff; text-align: center; margin-top: 0; }
+        p { text-align: center; color: #8b949e; margin-bottom: 30px; }
+        .crypto-item { background-color: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 15px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+        .crypto-name { font-weight: 600; color: #f0f6fc; min-width: 120px; }
+        .crypto-address { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; color: #a5d6ff; background-color: #21262d; padding: 5px 10px; border-radius: 6px; font-size: 14px; word-break: break-all; }
+        .copy-btn { background-color: #238636; color: white; border: none; padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; transition: background-color 0.2s; }
+        .copy-btn:hover { background-color: #2ea043; }
+        .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #8b949e; }
+        .footer a { color: #58a6ff; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💖 Поддержать проект</h1>
+        <p>Спасибо за вашу поддержку! Каждый донат — это мотивация развивать проект дальше.</p>
+
+        <div class="crypto-item">
+            <span class="crypto-name">USDT (TRC-20)</span>
+            <span class="crypto-address" id="usdt-trc">TY9qsCBHyuvU42zN46CGn3cT5HqsKo1RqP</span>
+            <button class="copy-btn" onclick="copyToClipboard('usdt-trc')">Копировать</button>
+        </div>
+
+        <div class="crypto-item">
+            <span class="crypto-name">USDT (BEP-20)</span>
+            <span class="crypto-address" id="usdt-bep">0xd47f33fdf5dcc62bc1d9980b1c96fd4b578e02e0</span>
+            <button class="copy-btn" onclick="copyToClipboard('usdt-bep')">Копировать</button>
+        </div>
+
+        <div class="crypto-item">
+            <span class="crypto-name">USDC / ETH (Base)</span>
+            <span class="crypto-address" id="usdc-base">0xe2f4446222d818996c49395443e22f402b94abdb</span>
+            <button class="copy-btn" onclick="copyToClipboard('usdc-base')">Копировать</button>
+        </div>
+
+        <div class="footer">
+            <p>Сделано с ❤️ для сообщества OpenWrt | <a href="https://github.com/Woolagaroo/woo-wrt-tgbot">Вернуться на GitHub</a></p>
+        </div>
+    </div>
+
+    <script>
+        function copyToClipboard(elementId) {
+            const text = document.getElementById(elementId).innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = event.target;
+                const originalText = btn.innerText;
+                btn.innerText = 'Скопировано!';
+                btn.style.backgroundColor = '#2ea043';
+                setTimeout(() => {
+                    btn.innerText = originalText;
+                    btn.style.backgroundColor = '#238636';
+                }, 2000);
+            }).catch(err => {
+                alert('Ошибка при копировании: ' + err);
+            });
+        }
+    </script>
+</body>
+</html>
