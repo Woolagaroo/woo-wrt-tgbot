@@ -3576,13 +3576,15 @@ ${_err}
             _bot_mark_busy_end
             
             local _new_ver=$(_bot_check_update)
-            local _upd_btn=""
+            local _kb=""
+            
             if [ -n "$_new_ver" ]; then
-                _upd_btn="{\"text\":\"📥 Обновить до v$_new_ver\",\"callback_data\":\"bot_update\"},"
+                _kb="{\"inline_keyboard\":[[{\"text\":\"📥 Обновить до v$_new_ver\",\"callback_data\":\"bot_update\"}], [{\"text\":\"🔄 Обновить\",\"callback_data\":\"status_refresh\"},{\"text\":\"❌ Закрыть\",\"callback_data\":\"status_close\"}]]}"
+            else
+                _kb="{\"inline_keyboard\":[[{\"text\":\"🔄 Обновить\",\"callback_data\":\"status_refresh\"},{\"text\":\"❌ Закрыть\",\"callback_data\":\"status_close\"}]]}"
             fi
-            local kb="{\"inline_keyboard\":[[${_upd_btn}{\"text\":\"🔄 Обновить\",\"callback_data\":\"status_refresh\"},{\"text\":\"❌ Закрыть\",\"callback_data\":\"status_close\"}]]}"
 
-            local new_msg_id=$(_bot_edit_menu_to_section "$result" "$kb")
+            local new_msg_id=$(_bot_edit_menu_to_section "$result" "$_kb")
             if [ -n "$new_msg_id" ]; then echo "$new_msg_id" > /tmp/telegram_bot/state/status_msg_id; fi
             ;;
         *"Клиенты онлайн"*|"/online")
@@ -3809,9 +3811,16 @@ MAC-адрес добавлен в черный список.</pre>"
         curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" -d text="🔄 Обновляю..." >/dev/null 2>&1
         _bot_mark_busy_start "status_refresh"
         local result=$(/etc/telegram_bot/notify.sh status 2>&1)
-        _bot_mark_busy_end
-        local kb='{"inline_keyboard":[[{"text":"🔄 Обновить","callback_data":"status_refresh"},{"text":"📥 Обновить бота","callback_data":"bot_update"},{"text":"❌ Закрыть","callback_data":"status_close"}]]}'
-        curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/editMessageText" -d chat_id="$CHAT_ID" -d message_id="$message_id" --data-urlencode text="$result" -d parse_mode="HTML" --data-urlencode "reply_markup=$kb" >/dev/null 2>&1
+        _bot_mark_busy_end  
+        local _new_ver=$(_bot_check_update)
+        local _kb=""
+        if [ -n "$_new_ver" ]; then
+            _kb="{\"inline_keyboard\":[[{\"text\":\"📥 Обновить до v$_new_ver\",\"callback_data\":\"bot_update\"}], [{\"text\":\"🔄 Обновить\",\"callback_data\":\"status_refresh\"},{\"text\":\"❌ Закрыть\",\"callback_data\":\"status_close\"}]]}"
+        else
+            _kb="{\"inline_keyboard\":[[{\"text\":\"🔄 Обновить\",\"callback_data\":\"status_refresh\"},{\"text\":\"❌ Закрыть\",\"callback_data\":\"status_close\"}]]}"
+        fi
+
+        curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/editMessageText" -d chat_id="$CHAT_ID" -d message_id="$message_id" --data-urlencode text="$result" -d parse_mode="HTML" --data-urlencode "reply_markup=$_kb" >/dev/null 2>&1
         return
     fi
 
