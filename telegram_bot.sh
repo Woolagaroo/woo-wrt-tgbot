@@ -223,7 +223,7 @@ send_message() {
     local text="$1"
     local keyboard="$2"
 
-    if [ -f "/tmp/telegram_bot/flags/no_reply_kb" ] && [ "$keyboard" = "$MAIN_KEYBOARD" ]; then
+    if [ -f "/etc/telegram_bot/data/.no_reply_kb" ] && [ "$keyboard" = "$MAIN_KEYBOARD" ]; then
         keyboard='{"remove_keyboard":true}'
     fi
 
@@ -416,11 +416,11 @@ MAIN_KEYBOARD='{"keyboard":[
     ["🖥️ Клиенты онлайн", "📊 Трафик"],
     ["⏱ Ограничить скорость", "🌐 Wake-on-LAN"],
     ["📁 Проводник", "📖 Справка"]
-],"resize_keyboard":true,"one_time_keyboard":true}'
+],"resize_keyboard":true,"one_time_keyboard":false}'
 
 send_menu() {
     local _kb="$MAIN_KEYBOARD"
-    if [ -f /tmp/telegram_bot/flags/no_reply_kb ]; then
+    if [ -f /etc/telegram_bot/data/.no_reply_kb ]; then
         _kb='{"remove_keyboard":true}'
     fi
     _send_menu_tracked "🏠 <b>Выберите действие</b>" "$_kb"
