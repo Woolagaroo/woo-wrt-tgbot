@@ -1158,6 +1158,9 @@ _exec_session_send() {
 
         if [ $((i % 3)) -eq 0 ] && [ "$i" -gt 0 ] && [ -n "$BOT_TOKEN" ]; then
             local _peek_offset=$((LAST_UPDATE_ID + 1))
+            if [ -n "$CURRENT_UPDATE_ID" ] && [ "$_peek_offset" -le "$CURRENT_UPDATE_ID" ]; then
+                _peek_offset=$((CURRENT_UPDATE_ID + 1))
+            fi
             local _peek
             _peek=$(curl -s --connect-timeout 2 --max-time 4 \
                 "https://api.telegram.org/bot$BOT_TOKEN/getUpdates?offset=$_peek_offset&limit=100" 2>/dev/null)
