@@ -1983,9 +1983,12 @@ _bot_build_string() {
 
 _bot_check_update() {
     local local_ver="0.0.0"
-    [ -f "/etc/telegram_bot/VERSION" ] && local_ver=$(cat "/etc/telegram_bot/VERSION" | tr -d '\n\r ')
+    if [ -f "/etc/telegram_bot/VERSION" ]; then
+        local_ver=$(cat "/etc/telegram_bot/VERSION" 2>/dev/null | tr -d 'v \n\r')
+    fi
 
-    local remote_ver=$(curl -s --connect-timeout 5 --max-time 10 "https://raw.githubusercontent.com/Woolagaroo/woo-wrt-tgbot/main/VERSION" | tr -d '\n\r ')
+    local remote_ver
+    remote_ver=$(curl -s --connect-timeout 5 --max-time 10 "https://api.github.com/repos/Woolagaroo/woo-wrt-tgbot/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//' | tr -d '\n\r ')
 
     if [ -n "$remote_ver" ] && [ "$local_ver" != "$remote_ver" ]; then
         echo "$remote_ver"
