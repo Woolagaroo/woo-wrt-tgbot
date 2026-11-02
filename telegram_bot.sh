@@ -2605,6 +2605,11 @@ _run_speedtest_ui() {
 
 handle_command() {
     local text="$1"
+    if [ -f "/tmp/telegram_bot/state/ctrlc_msg_id" ]; then
+        local _old_ctrlc=$(cat "/tmp/telegram_bot/state/ctrlc_msg_id" 2>/dev/null | tr -d '\n\r ')
+        [ -n "$_old_ctrlc" ] && curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_old_ctrlc" >/dev/null 2>&1
+        rm -f "/tmp/telegram_bot/state/ctrlc_msg_id"
+    fi
     if [ -f "/tmp/telegram_bot/flags/skip_msg_id" ]; then
         local _skip_id=$(cat "/tmp/telegram_bot/flags/skip_msg_id" 2>/dev/null | tr -d '\n\r ')
         if [ -n "$_skip_id" ]; then curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_skip_id" >/dev/null 2>&1 & fi
@@ -2982,7 +2987,26 @@ ${_err_esc}" -d parse_mode="HTML" 2>&1)
 
 Новая будет создана заново при следующей команде."; return
     fi
-
+    if [ "$text" = "/exec _ctrlc" ]; then
+        if [ -n "$_IN_TEXT_MSG_ID" ]; then
+            curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_IN_TEXT_MSG_ID" >/dev/null 2>&1
+            _IN_TEXT_MSG_ID=""
+        fi
+        
+        if [ -f "/tmp/telegram_bot/state/ctrlc_msg_id" ]; then
+            return
+        fi
+        if _exec_session_active; then
+            _exec_session_kill
+            rm -f "$_EXEC_WAIT_MSG_FILE" /tmp/telegram_bot/exec/session/last_cmd
+            local _cmid=$(send_message_and_get_id "🛑 <b>Команда прервана</b>")
+            [ -n "$_cmid" ] && echo "$_cmid" > /tmp/telegram_bot/state/ctrlc_msg_id
+        else
+            local _cmid=$(send_message_and_get_id "ℹ️ <b>Нет активной команды для прерывания</b>")
+            [ -n "$_cmid" ] && echo "$_cmid" > /tmp/telegram_bot/state/ctrlc_msg_id
+        fi
+        return
+    fi
     if [[ "$text" == "/exec "* || "$text" == "/exec"$'\n'* || "$text" == "/exec" ]]; then
         local _exec_cmd="${text#/exec}"; _exec_cmd="${_exec_cmd# }"; _exec_cmd="${_exec_cmd#$'\n'}"
 
@@ -3149,7 +3173,10 @@ ${SEP46}</pre>" "$_info_kb")
             local _exec_out="$_EXEC_OUTPUT"; [ -z "$_exec_out" ] && _exec_out="(нет вывода до прерывания)"
             if declare -F _exec_send_output >/dev/null 2>&1; then _exec_send_output "$_exec_cmd" "$_exec_out" "${_EXEC_LAST_RC:-130}" "$_exec_msg_id"; fi
             rm -f "$_EXEC_WAIT_MSG_FILE"
-            send_message "🛑 <b>Команда прервана</b>"; return
+            
+            local _cmid=$(send_message_and_get_id "🛑 <b>Команда прервана</b>")
+            [ -n "$_cmid" ] && echo "$_cmid" > /tmp/telegram_bot/state/ctrlc_msg_id
+            return
         fi
 
         if [ "$_exec_rc" = "3" ]; then
@@ -3681,6 +3708,11 @@ handle_callback() {
     local callback_id="$2"
     local message_id="$3"
     local chat_id="$4"
+    if [ -f "/tmp/telegram_bot/state/ctrlc_msg_id" ]; then
+        local _old_ctrlc=$(cat "/tmp/telegram_bot/state/ctrlc_msg_id" 2>/dev/null | tr -d '\n\r ')
+        [ -n "$_old_ctrlc" ] && curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_old_ctrlc" >/dev/null 2>&1
+        rm -f "/tmp/telegram_bot/state/ctrlc_msg_id"
+    fi
     if [ -f "/tmp/telegram_bot/flags/skip_msg_id" ]; then
         local _skip_id=$(cat "/tmp/telegram_bot/flags/skip_msg_id" 2>/dev/null | tr -d '\n\r ')
         if [ -n "$_skip_id" ]; then curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_skip_id" >/dev/null 2>&1 & fi
@@ -3811,7 +3843,8 @@ MAC-адрес добавлен в черный список.</pre>"
         curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" -d text="🔄 Обновляю..." >/dev/null 2>&1
         _bot_mark_busy_start "status_refresh"
         local result=$(/etc/telegram_bot/notify.sh status 2>&1)
-        _bot_mark_busy_end  
+        _bot_mark_busy_end
+        
         local _new_ver=$(_bot_check_update)
         local _kb=""
         if [ -n "$_new_ver" ]; then
