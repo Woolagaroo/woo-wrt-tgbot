@@ -551,6 +551,18 @@ _expl_build_browser_keyboard() {
             fi
         fi
 
+        local _usb_mp=$(_expl_find_usb_mount)
+        local _dev=$(cat "$_EXPL_DEVICE_FILE" 2>/dev/null)
+        [ -z "$_dev" ] && _dev="router"
+
+        if [ -n "$_usb_mp" ]; then
+            if [ "$_dev" = "usb" ]; then
+                _kb_rows+=("[{\"text\":\"Перейти к 📠 Роутеру\",\"callback_data\":\"expl_nav_switch\"}]")
+            else
+                _kb_rows+=("[{\"text\":\"Перейти к 💾 USB\",\"callback_data\":\"expl_nav_switch\"}]")
+            fi
+        fi
+
         _kb_rows+=("[{\"text\":\"📂 Распаковать здесь\",\"callback_data\":\"expl_unpack_here\"},{\"text\":\"🚫 Отмена\",\"callback_data\":\"expl_unpack_cancel_select\"}]")
 
         local _cur_path=$(cat "$_EXPL_CUR_PATH_FILE" 2>/dev/null)
@@ -560,7 +572,7 @@ _expl_build_browser_keyboard() {
             _nav2="{\"text\":\"⬆️ Вверх\",\"callback_data\":\"expl_nav_up\"},"
         fi
         _nav2="$_nav2{\"text\":\"🏠 В корень\",\"callback_data\":\"expl_nav_home\"},"
-        _nav2="$_nav2{\"text\":\"❌ Отмена\",\"callback_data\":\"expl_close\"}"
+        _nav2="$_nav2{\"text\":\"❌ Закрыть\",\"callback_data\":\"expl_close\"}"
         _kb_rows+=("[$_nav2]")
 
         local _joined="" _r
