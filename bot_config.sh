@@ -1938,11 +1938,13 @@ _send_menu_tracked() {
 
 _bot_kill_main_menu() {
     if [ -f "$_BOT_MENU_MSG_FILE" ]; then
-        local _mid=$(cat "$_BOT_MENU_MSG_FILE" 2>/dev/null | tr -d '\n\r ')
-        if [ -n "$_mid" ]; then
-            curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_mid" >/dev/null 2>&1 &
+        if [ -f "/etc/telegram_bot/data/.no_reply_kb" ]; then
+            local _mid=$(cat "$_BOT_MENU_MSG_FILE" 2>/dev/null | tr -d '\n\r ')
+            if [ -n "$_mid" ]; then
+                curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_mid" >/dev/null 2>&1 &
+            fi
+            rm -f "$_BOT_MENU_MSG_FILE"
         fi
-        rm -f "$_BOT_MENU_MSG_FILE"
     fi
 }
 
@@ -1962,9 +1964,11 @@ _bot_edit_menu_to_section() {
     fi
 
     if [ -n "$_menu_id" ]; then
-        curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" \
-            -d chat_id="$CHAT_ID" -d message_id="$_menu_id" >/dev/null 2>&1 &
-        rm -f "$_BOT_MENU_MSG_FILE"
+        if [ -f "/etc/telegram_bot/data/.no_reply_kb" ]; then
+            curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" \
+                -d chat_id="$CHAT_ID" -d message_id="$_menu_id" >/dev/null 2>&1 &
+            rm -f "$_BOT_MENU_MSG_FILE"
+        fi
     fi
 
     local resp
