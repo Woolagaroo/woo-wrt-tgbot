@@ -53,6 +53,53 @@ _EXPL_LAST_ARCHIVE_FILE="/tmp/telegram_bot/explorer/last_archive"
 # 🛠️ РАЗДЕЛ 2: БАЗОВЫЕ УТИЛИТЫ И РАБОТА С ПУТЯМИ
 # ==============================================================================
 
+# Очистка имени от невалидного UTF-8 (только для отображения!)
+_expl_utf8_display() {
+    local s="$1"
+    [ -z "$s" ] && { printf ''; return; }
+
+    # Если имя состоит только из ASCII (английские буквы, цифры) — возвращаем как есть
+    if ! printf '%s' "$s" | LC_ALL=C grep -q '[^ -~]'; then
+        printf '%s' "$s"
+        return
+    fi
+
+    # 1. Проверяем, может это уже валидный UTF-8?
+    if printf '%s' "$s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        printf '%s' "$s"
+        return
+    fi
+
+    # 2. Если нет, значит это скорее всего Windows-1251 (CP1251). Пробуем перекодировать!
+    if command -v iconv >/dev/null 2>&1; then
+        local r
+        r=$(printf '%s' "$s" | iconv -f CP1251 -t UTF-8 2>/dev/null)
+        if [ -n "$r" ]; then
+            printf '%s' "$r"
+            return
+        fi
+    fi
+
+    # 3. Если не вышло, аккуратно вырезаем битые байты, оставляя английские буквы
+    if command -v iconv >/dev/null 2>&1; then
+        local r
+        r=$(printf '%s' "$s" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+        if [ -n "$r" ]; then
+            printf '%s' "$r"
+            return
+        fi
+    fi
+
+    # 4. Жёсткий fallback: заменяем вообще все не-ASCII байты на '?'
+    printf '%s' "$s" | od -An -tu1 -v | LC_ALL=C awk '
+    {
+        for (i=1; i<=NF; i++) {
+            if ($i < 128) printf "%c", $i
+            else printf "?"
+        }
+    }'
+}
+
 # Байты → человекочитаемо (B / KB / MB / GB).
 _expl_format_size() {
     local b="$1"
@@ -277,14 +324,17 @@ _expl_get_entries() {
     local path="$1"
     [ -d "$path" ] || return 1
 
+    local _dir="$path"
+    [ "$_dir" = "/" ] && _dir=""
+
     local raw
     if command -v timeout >/dev/null 2>&1; then
-        raw=$(timeout 15 stat -c '%F|%s|%n' "$path"/* "$path"/.[!.]* "$path"/..?* 2>/dev/null)
+        raw=$(timeout 15 stat -c '%F|%s|%n' "$_dir"/* "$_dir"/.[!.]* "$_dir"/..?* 2>/dev/null)
         if [ $? -eq 124 ]; then
             echo "$(date): _expl_get_entries: TIMEOUT, список файлов может быть неполным" >> /tmp/telegram_bot/logs/bot.log
         fi
     else
-        raw=$(stat -c '%F|%s|%n' "$path"/* "$path"/.[!.]* "$path"/..?* 2>/dev/null)
+        raw=$(stat -c '%F|%s|%n' "$_dir"/* "$_dir"/.[!.]* "$_dir"/..?* 2>/dev/null)
     fi
     [ -z "$raw" ] && return 0
 
@@ -722,7 +772,7 @@ _expl_render_device_select() {
     local _hostname=$(cat /proc/sys/kernel/hostname 2>/dev/null)
     [ -z "$_hostname" ] && _hostname="Роутер"
     [ ${#_hostname} -gt 12 ] && _hostname="${_hostname:0:11}…"
-    local _safe_host=$(html_escape "$_hostname")
+    local _safe_host=$(html_escape "$(_expl_utf8_display "$_hostname")")
     local _router_size=$(_expl_df_size_str "/" "MB")
 
     local _rows="" _row
@@ -733,10 +783,10 @@ _expl_render_device_select() {
     for _mp in "${_usb_list[@]}"; do
         local _usb_display=$(_expl_usb_display_name "$_mp")
         [ ${#_usb_display} -gt 13 ] && _usb_display="${_usb_display:0:12}…"
-        local _safe_usb_name=$(html_escape "$_usb_display")
+        local _safe_usb_name=$(html_escape "$(_expl_utf8_display "$_usb_display")")
         local _usb_path="$_mp"
         [ ${#_usb_path} -gt 13 ] && _usb_path="${_usb_path:0:12}…"
-        local _safe_usb_path=$(html_escape "$_usb_path")
+        local _safe_usb_path=$(html_escape "$(_expl_utf8_display "$_usb_path")")
         local _usb_size=$(_expl_df_size_str "$_mp" "GB")
 
         printf -v _row "%-2s %s %-13s %-14s %-14s" "$_idx" "💾" "$_safe_usb_name" "$_safe_usb_path" "$_usb_size"
@@ -786,7 +836,7 @@ _expl_render_browser() {
 
     local entries=$(_expl_get_entries "$path")
     local total=0
-    [ -n "$entries" ] && total=$(printf '%s\n' "$entries" | wc -l | tr -d ' ')
+    [ -n "$entries" ] && total=$(printf '%s' "$entries" | awk 'END{print NR}')
     [ -z "$total" ] && total=0
 
     local total_pages=$(( (total + _EXPL_PAGE_SIZE - 1) / _EXPL_PAGE_SIZE ))
@@ -819,7 +869,12 @@ _expl_render_browser() {
             [ "$_cnt" -gt "$end" ] && break
             [ "$type" != "D" ] && continue
 
-            local _full_p="$path/$name"
+            local _full_p
+            if [ "$path" = "/" ]; then
+                _full_p="/$name"
+            else
+                _full_p="$path/$name"
+            fi
             local _c_data="${_cache_map[$_full_p]}"
             
             if [ -n "$_c_data" ]; then
@@ -890,7 +945,8 @@ _expl_render_browser() {
                 [ -n "$_dsz" ] && size_fmt=$(_expl_format_size "$_dsz")
             fi
 
-            local name_short="$name"
+            local name_disp=$(_expl_utf8_display "$name")
+            local name_short="$name_disp"
             [ ${#name_short} -gt 32 ] && name_short="${name_short:0:32}…"
             local safe_name=$(html_escape "$name_short")
             
@@ -908,7 +964,7 @@ _expl_render_browser() {
     local header="📁 ПРОВОДНИК"
     [ "$total_pages" -gt 1 ] && header="📁 ПРОВОДНИК (стр. $page / $total_pages)"
     local _path_wrapped=$(_expl_wrap_path "$path" 49 "   ")
-    local path_esc=$(html_escape "$_path_wrapped")
+    local path_esc=$(html_escape "$(_expl_utf8_display "$_path_wrapped")")
 
     local msg="<pre>${header}
 ${SEP46}
@@ -928,7 +984,7 @@ ${SEP46}
 
 _expl_render_error() {
     local text="$1"
-    local safe=$(html_escape "$text")
+    local safe=$(html_escape "$(_expl_utf8_display "$text")")
     local msg="<pre>❌ ОШИБКА
 ${SEP46}
 ${SEP46}
@@ -959,10 +1015,10 @@ _expl_show_actions() {
     echo "actions" > "$_EXPL_MODE_FILE"
 
     local name=$(basename "$path")
-    local safe_name=$(html_escape "$name")
+    local safe_name=$(html_escape "$(_expl_utf8_display "$name")")
     local parent=$(dirname "$path")
     local _parent_wrapped=$(_expl_wrap_path "$parent" 49 "   ")
-    local parent_esc=$(html_escape "$_parent_wrapped")
+    local parent_esc=$(html_escape "$(_expl_utf8_display "$_parent_wrapped")")
 
     local info_type="Файл"
     local info_extra=""
@@ -998,7 +1054,7 @@ _expl_show_actions() {
     local icon="📄"; [ "$type" = "D" ] && icon="📁"
 
     local _path_wrapped=$(_expl_wrap_path "$path")
-    local _path_esc=$(html_escape "$_path_wrapped")
+    local _path_esc=$(html_escape "$(_expl_utf8_display "$_path_wrapped")")
 
     local info_block="📂 ${parent_esc}
 ${SEP46}
@@ -1073,7 +1129,7 @@ _expl_do_paste() {
     if [ "$src" = "$dest" ]; then
         rm -f "$_EXPL_CLIPBOARD_FILE"
         echo "$src" > "$_EXPL_SAME_FOLDER_SRC_FILE"
-        local _sf_esc=$(html_escape "$src")
+        local _sf_esc=$(html_escape "$(_expl_utf8_display "$src")")
         local msg="<pre>❌ Нельзя копировать файл в ту же папку
 ${SEP46}
 ${SEP46}
@@ -1123,18 +1179,18 @@ ${SEP46}
     local _type_desc
     if [ -d "$src" ]; then
         local _cnt=0; [ -d "$dest" ] && _cnt=$(ls -1A "$dest" 2>/dev/null | wc -l | tr -d ' ')
-        local _dest_esc=$(html_escape "$_dest_wrapped_conflict")
+        local _dest_esc=$(html_escape "$(_expl_utf8_display "$_dest_wrapped_conflict")")
         _type_desc="📁 Папка уже существует
 $_dest_esc
 Внутри: ${_cnt} элемент(ов)"
     else
-        local _dest_esc=$(html_escape "$_dest_wrapped_conflict")
+        local _dest_esc=$(html_escape "$(_expl_utf8_display "$_dest_wrapped_conflict")")
         _type_desc="📄 Файл уже существует
 $_dest_esc"
     fi
 
     local _src_wrapped_conflict=$(_expl_wrap_path "$src" 42 "          ")
-    local safe_src=$(html_escape "$_src_wrapped_conflict")
+    local safe_src=$(html_escape "$(_expl_utf8_display "$_src_wrapped_conflict")")
 
     local msg="<pre>📁 ПРОВОДНИК — ВСТАВКА
 ${SEP46}
@@ -1224,12 +1280,12 @@ _expl_show_rename_dialog() {
     local path=$(_expl_normalize_path "$1")
     [ -z "$path" ] && path="/"
     local name=$(basename "$path")
-    local safe=$(html_escape "$name")
+    local safe=$(html_escape "$(_expl_utf8_display "$name")")
     echo "1" > "$_EXPL_RENAME_MODE_FILE"
     echo "$path" > "$_EXPL_RENAME_TARGET_FILE"
 
     local _path_wrapped=$(_expl_wrap_path "$path" 46 "      ")
-    local _path_esc=$(html_escape "$_path_wrapped")
+    local _path_esc=$(html_escape "$(_expl_utf8_display "$_path_wrapped")")
 
     local msg="<pre>📁 ПРОВОДНИК — ПЕРЕИМЕНОВАНИЕ
 ${SEP46}
@@ -1270,7 +1326,7 @@ _expl_handle_rename_text() {
     local dir=$(dirname "$target")
     local new_path="$dir/$new_name"
     if [ -e "$new_path" ] && [ "$new_path" != "$target" ]; then
-        local _safe=$(html_escape "$new_name")
+        local _safe=$(html_escape "$(_expl_utf8_display "$new_name")")
         local msg="❌ <b>Файл <code>$_safe</code> уже существует.</b>
 Введите другое имя или нажмите Отмена."
         local keyboard='{"inline_keyboard":[[{"text":"🔙 Отмена","callback_data":"expl_rename_cancel"}]]}'
@@ -1308,7 +1364,7 @@ _expl_show_delete_confirm() {
     local path="$1"
     local type="$2"
     local name=$(basename "$path")
-    local safe=$(html_escape "$name")
+    local safe=$(html_escape "$(_expl_utf8_display "$name")")
     local icon="📄"; [ "$type" = "D" ] && icon="📁"
 
     local _norm=$(_expl_normalize_path "$path")
@@ -1321,7 +1377,7 @@ _expl_show_delete_confirm() {
     fi
 
     local _path_wrapped=$(_expl_wrap_path "$path" 46 "      ")
-    local _path_esc=$(html_escape "$_path_wrapped")
+    local _path_esc=$(html_escape "$(_expl_utf8_display "$_path_wrapped")")
 
     local _is_sys=0
     case "$_norm" in
@@ -1419,7 +1475,7 @@ _expl_do_pack() {
 
     case "$path" in
         /proc|/proc/*|/sys|/sys/*|/dev|/dev/*)
-            local _p_esc=$(html_escape "$path")
+            local _p_esc=$(html_escape "$(_expl_utf8_display "$path")")
             _expl_render_error "Нельзя запаковать виртуальную ФС
 
 Путь:
@@ -1483,8 +1539,8 @@ $_p_esc"
                 "") _reason="tar вернул код $_tar_rc без сообщения." ;;
                 *) _reason="$_tar_err" ;;
             esac
-            local _p_esc=$(html_escape "$path")
-            local _reason_esc=$(html_escape "$_reason")
+            local _p_esc=$(html_escape "$(_expl_utf8_display "$path")")
+            local _reason_esc=$(html_escape "$(_expl_utf8_display "$_reason")")
             _expl_render_error "Не удалось создать архив
 
 Путь:
@@ -1498,7 +1554,7 @@ $_p_esc
     fi
 
     if [ ! -s "$archive" ]; then
-        local _p_esc=$(html_escape "$path")
+        local _p_esc=$(html_escape "$(_expl_utf8_display "$path")")
         _expl_render_error "Архив создан, но пустой (0 байт)
 
 Путь:
@@ -1509,9 +1565,9 @@ $_p_esc"
 
     local sz=$(stat -c %s "$archive" 2>/dev/null); [ -z "$sz" ] && sz=0
     local size_hr=$(_expl_format_size "$sz")
-    local safe_base=$(html_escape "$base")
+    local safe_base=$(html_escape "$(_expl_utf8_display "$base")")
     local _archive_wrapped=$(_expl_wrap_path "$archive" 46 "      ")
-    local safe_archive=$(html_escape "$_archive_wrapped")
+    local safe_archive=$(html_escape "$(_expl_utf8_display "$_archive_wrapped")")
 
     printf '%s' "$archive" > "$_EXPL_LAST_ARCHIVE_FILE"
 
@@ -1595,9 +1651,9 @@ _expl_unpack_do() {
 
     if [ "$mode" = "skip" ] && [ -e "$target" ]; then
         rm -f /tmp/telegram_bot/explorer/unpack_state
-        local safe_base=$(html_escape "$base")
+        local safe_base=$(html_escape "$(_expl_utf8_display "$base")")
         local _target_wrapped_skip=$(_expl_wrap_path "$target" 52 "   ")
-        local safe_target=$(html_escape "$_target_wrapped_skip")
+        local safe_target=$(html_escape "$(_expl_utf8_display "$_target_wrapped_skip")")
         local msg="<pre>⏭ Пропущено (уже существует)
 ${SEP46}
 ${SEP46}
@@ -1712,13 +1768,13 @@ ${SEP46}</pre>"
     rm -f /tmp/telegram_bot/explorer/unpack_state
     if [ "$rc" != "0" ]; then _expl_render_error "Ошибка распаковки (код $rc)"; return; fi
 
-    local safe_base=$(html_escape "$base")
+    local safe_base=$(html_escape "$(_expl_utf8_display "$base")")
     local _target_wrapped=$(_expl_wrap_path "$target" 46 "      ")
-    local safe_target=$(html_escape "$_target_wrapped")
+    local safe_target=$(html_escape "$(_expl_utf8_display "$_target_wrapped")")
     local _msg
 
     if [ -n "$_single_file" ]; then
-        local _fname_esc=$(html_escape "$_single_file")
+        local _fname_esc=$(html_escape "$(_expl_utf8_display "$_single_file")")
         local _fsz=$(stat -c %s "$target" 2>/dev/null); [ -z "$_fsz" ] && _fsz=0
         local _fhr=$(_expl_format_size "$_fsz")
         _msg="<pre>✅ Файл распакован
@@ -1800,7 +1856,7 @@ _expl_do_install() {
 
     local sz=$(stat -c %s "$path" 2>/dev/null); [ -z "$sz" ] && sz=0
     local size_hr=$(_expl_format_size "$sz")
-    local safe_name=$(html_escape "$name")
+    local safe_name=$(html_escape "$(_expl_utf8_display "$name")")
 
     local _prog_msg="<pre>📦 ПРОВОДНИК — УСТАНОВКА
 ${SEP46}
@@ -1850,7 +1906,7 @@ ${SEP46}
 
     if [ "$_found_prompt" = "1" ]; then
         _prompt_text=$(tail -n 10 "$_apk_log" | sed -E 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r' | grep -v '^$' | tail -n 4)
-        local _safe_prompt=$(html_escape "$_prompt_text")
+        local _safe_prompt=$(html_escape "$(_expl_utf8_display "$_prompt_text")")
         
         local _msg="<pre>⚠️ Пакет требует подтверждения:
 ${_safe_prompt}
@@ -1908,7 +1964,7 @@ _expl_do_download() {
 Размер: $(_expl_format_size "$sz")"; return; fi
 
     local base=$(basename "$path")
-    local safe_base=$(html_escape "$base")
+    local safe_base=$(html_escape "$(_expl_utf8_display "$base")")
     local size_hr=$(_expl_format_size "$sz")
 
     curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
@@ -1939,7 +1995,7 @@ _expl_view_check() {
     esac
 
     local sz=$(stat -c %s "$path" 2>/dev/null); case "$sz" in ''|*[!0-9]*) sz=0 ;; esac
-    if [ "$sz" -gt 1048576 ]; then echo "Просмотр недоступен — файл больше 1 МБ.
+    if [ "$sz" -gt 5242880 ]; then echo "Просмотр недоступен — файл больше 5 МБ.
 Используйте ⬇️ Скачать."; return 1; fi
 
     if command -v file >/dev/null 2>&1; then
@@ -1972,7 +2028,7 @@ _expl_do_view() {
     if [ $? -ne 0 ]; then _expl_render_error "$_reason"; return; fi
 
     local _prog_msg_id=$(send_message_and_get_id "⏳ <b>Читаю файл…</b>
-<code>$(html_escape "$path")</code>")
+<code>$(html_escape "$(_expl_utf8_display "$path")")</code>")
     touch /tmp/telegram_bot/explorer/view_lock
 
     if ! _exec_session_active; then
@@ -2027,7 +2083,7 @@ _expl_show_upload_prompt() {
     echo "1" > "$_EXPL_UPLOAD_MODE_FILE"
 
     local _cur_wrapped=$(_expl_wrap_path "$cur" 49 "   ")
-    local cur_esc=$(html_escape "$_cur_wrapped")
+    local cur_esc=$(html_escape "$(_expl_utf8_display "$_cur_wrapped")")
     local _dev=$(cat "$_EXPL_DEVICE_FILE" 2>/dev/null)
     local _dir_note="в <code>/tmp/</code> (временная память)"
     if [ "$_dev" = "usb" ]; then _dir_note="в текущую папку USB"; fi
@@ -2094,7 +2150,7 @@ _expl_handle_document() {
     local sz=$(stat -c %s "$dest" 2>/dev/null); [ -z "$sz" ] && sz=0
     local size_hr=$(_expl_format_size "$sz")
     local _dest_wrapped=$(_expl_wrap_path "$dest" 46 "      ")
-    local safe_dest=$(html_escape "$_dest_wrapped")
+    local safe_dest=$(html_escape "$(_expl_utf8_display "$_dest_wrapped")")
 
     rm -f "$_EXPL_UPLOAD_MODE_FILE"
 
@@ -2113,7 +2169,7 @@ _expl_handle_document() {
 local _result_msg="<pre>✅ Файл загружен
 ${SEP46}
 ${SEP46}
-📄 $(html_escape "$file_name")
+📄 $(html_escape "$(_expl_utf8_display "$file_name")")
 Путь: $safe_dest
 Размер: $size_hr
 ${SEP46}
@@ -2448,8 +2504,8 @@ _expl_handle_callback() {
 
 ⚠️ Для применения изменений потребуется
    ПЕРЕЗАГРУЗКА роутера (reboot)."; fi
-                local _safe_target=$(html_escape "$_up_target")
-                local _safe_archive=$(html_escape "$(basename "$_up_archive")")
+                local _safe_target=$(html_escape "$(_expl_utf8_display "$_up_target")")
+                local _safe_archive=$(html_escape "$(_expl_utf8_display "$(basename "$_up_archive")")")
 local _warn_msg="<pre>⚠️ РАСПАКОВКА В СИСТЕМНЫЙ ПУТЬ
 
 ${SEP46}
@@ -2566,7 +2622,7 @@ ${SEP46}
             local path=$(cat "$_EXPL_SEL_PATH_FILE" 2>/dev/null)
             if [ -n "$path" ]; then
                 local base=$(basename "$path")
-                local safe_base=$(html_escape "$base")
+                local safe_base=$(html_escape "$(_expl_utf8_display "$base")")
                                 local text="⚠️ <b>Установка пакета</b>
 
 Вы действительно хотите установить пакет:
@@ -2860,7 +2916,7 @@ _expl_handle_search_input() {
     if [ "$total" -eq 0 ]; then
         local prompt="🔍 <b>Поиск файлов и папок</b>
 
-❌ Ничего не найдено по запросу <code>$query_clean</code>.
+❌ Ничего не найдено по запросу <code>$(_expl_utf8_display "$query_clean")</code>.
 Попробуйте ввести другой запрос:"
         local kb='{"inline_keyboard":[[{"text":"🔙 Отмена","callback_data":"expl_search_cancel"}]]}'
         _expl_send_or_edit "$prompt" "$kb" ""
@@ -2868,7 +2924,7 @@ _expl_handle_search_input() {
     fi
 
     rm -f "$_EXPL_SEARCH_MODE_FILE"
-    local safe_query=$(html_escape "$text")
+    local safe_query=$(html_escape "$(_expl_utf8_display "$text")")
     if [ ${#safe_query} -gt 45 ]; then safe_query="${safe_query:0:42}..."; fi
 
     local res="<pre>📁 ПРОВОДНИК — РЕЗУЛЬТАТЫ ПОИСКА
@@ -2883,7 +2939,7 @@ ${SEP46}
         local icon="📄"; [ -d "$fullpath" ] && icon="📁"
         local display_path="$fullpath"
         if [ ${#display_path} -gt 45 ]; then display_path="${display_path:0:20}...${display_path: -22}"; fi
-        local safe_path=$(html_escape "$display_path")
+        local safe_path=$(html_escape "$(_expl_utf8_display "$display_path")")
         printf -v row "%-2s %s %s" "$i" "$icon" "$safe_path"
         res="${res}${row}"$'\n'
         i=$((i+1))
