@@ -295,14 +295,14 @@ _expl_get_entries() {
             name="${fpath_rest##*/}"
             [ -z "$name" ] && continue
             case "$ftype" in
-                directory) printf 'D|0|%s\n' "$name" ;;
+                directory) printf 'D\t0\t%s\n' "$name" ;;
                 "symbolic link")
-                    if [ -d "$fpath_rest" ]; then printf 'D|0|%s\n' "$name"
-                    else printf 'F|%s|%s\n' "$fsize" "$name"; fi ;;
-                *) printf 'F|%s|%s\n' "$fsize" "$name" ;;
+                    if [ -d "$fpath_rest" ]; then printf 'D\t0\t%s\n' "$name"
+                    else printf 'F\t%s\t%s\n' "$fsize" "$name"; fi ;;
+                *) printf 'F\t%s\t%s\n' "$fsize" "$name" ;;
             esac
         done <<< "$raw"
-    } | awk -F'|' '
+    } | awk -F'\t' '
         {
             n = $3
             key = ""
@@ -323,9 +323,9 @@ _expl_get_entries() {
                     pos++
                 }
             }
-            printf "%s|%s|%s|%s\n", $1, $2, $3, key
+            printf "%s\t%s\t%s\t%s\n", $1, $2, $3, key
         }
-    ' | sort -t'|' -k1,1 -k4,4 | cut -d'|' -f1-3
+    ' | sort -t$'\t' -k1,1 -k4,4 | cut -d$'\t' -f1-3 | awk -F'\t' '{print $1"|"$2"|"$3}'
 }
 
 # На какой странице окажется path.
@@ -893,11 +893,12 @@ _expl_render_browser() {
             local name_short="$name"
             [ ${#name_short} -gt 32 ] && name_short="${name_short:0:32}…"
             local safe_name=$(html_escape "$name_short")
-            local pad=$((32 - ${#name_short}))
+            
+            local pad=$((33 - ${#name_short}))
             [ "$pad" -lt 0 ] && pad=0
-            local name_padded="$safe_name$(printf '%*s' "$pad" '')"
+            local spaces=$(printf "%*s" "$pad" "")
 
-            printf -v row "%-4s %s %-33s  %-9s" "$n" "$icon" "$name_padded" "$size_fmt"
+            printf -v row "%-4s %s %s%s  %-9s" "$n" "$icon" "$safe_name" "$spaces" "$size_fmt"
             table_rows="${table_rows}${row}"$'\n'
         done <<< "$entries"
     else
@@ -1247,6 +1248,11 @@ _expl_handle_rename_text() {
     local new_name="$1"
     local target=$(cat "$_EXPL_RENAME_TARGET_FILE" 2>/dev/null)
     [ -z "$target" ] && { rm -f "$_EXPL_RENAME_MODE_FILE"; return 1; }
+	
+	if [ -n "$_IN_TEXT_MSG_ID" ]; then
+        curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_IN_TEXT_MSG_ID" >/dev/null 2>&1
+        _IN_TEXT_MSG_ID=""
+    fi
 
     if ! _expl_sanitize_name "$new_name"; then
         local msg="❌ <b>Недопустимое имя</b>
