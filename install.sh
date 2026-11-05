@@ -34,6 +34,9 @@ for pkg in $REQ_PKGS; do
         "procps-ng-pkill") cmd="pkill" ;;
         "hostapd-utils") cmd="hostapd_cli" ;;
         "coreutils-timeout") cmd="timeout" ;;
+        "coreutils-stat") cmd="stat" ;;
+        "coreutils-du") cmd="du" ;;
+        "findutils") cmd="find" ;;
         *) cmd="$pkg" ;;
     esac
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -111,7 +114,7 @@ TMP_DIR="/tmp/tgbot_install_$$"
 mkdir -p "$TMP_DIR"
 cd "$TMP_DIR" || exit 1
 
-FILES="telegram_bot.sh event_monitor.sh notify.sh wifi.sh explorer.sh bot_config.sh watchdog.sh restart_bot.sh boot_notify.sh uninstall_bot.sh VERSION woo-wrt-tgbot"
+FILES="telegram_bot.sh event_monitor.sh notify.sh wifi.sh explorer.sh bot_config.sh watchdog.sh restart_bot.sh boot_notify.sh uninstall_bot.sh update.sh VERSION woo-wrt-tgbot"
 for file in $FILES; do
     wget -q -T 15 -O "$file" "$GITHUB_REPO/$file"
     
