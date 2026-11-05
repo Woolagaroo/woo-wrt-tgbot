@@ -242,6 +242,13 @@ send_long_tg() {
     local keyboard="${2:-}"
     local max_len=4000
     local ok=0
+    
+    if command -v iconv >/dev/null 2>&1; then
+        text=$(printf '%s' "$text" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+    else
+        text=$(printf '%s' "$text" | tr -cd '\11\12\15\40-\176\200-\377')
+    fi
+
     local safe_text="$text"
 
     if [[ "$safe_text" == "<pre>"*"</pre>" ]]; then
