@@ -220,8 +220,14 @@ _show_error_msg() {
 }
 
 send_message() {
-    local text="$1"
+    local safe_text="$1"
     local keyboard="$2"
+
+    if command -v iconv >/dev/null 2>&1; then
+        safe_text=$(printf '%s' "$safe_text" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+    else
+        safe_text=$(printf '%s' "$safe_text" | tr -cd '\11\12\15\40-\176\200-\377')
+    fi
 
     if [ -f "/etc/telegram_bot/data/.no_reply_kb" ] && [ "$keyboard" = "$MAIN_KEYBOARD" ]; then
         keyboard='{"remove_keyboard":true}'
@@ -231,14 +237,14 @@ send_message() {
     if [ -n "$keyboard" ]; then
         response=$(curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
             -d chat_id="$CHAT_ID" \
-            --data-urlencode text="$text" \
+            --data-urlencode text="$safe_text" \
             -d parse_mode="HTML" \
             -d disable_web_page_preview="true" \
             --data-urlencode "reply_markup=$keyboard" 2>&1)
     else
         response=$(curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
             -d chat_id="$CHAT_ID" \
-            --data-urlencode text="$text" \
+            --data-urlencode text="$safe_text" \
             -d parse_mode="HTML" \
             -d disable_web_page_preview="true" 2>&1)
     fi
@@ -254,6 +260,12 @@ send_long_message() {
     local text="$1"
     local keyboard="$2"
     local max_len=3900
+
+    if command -v iconv >/dev/null 2>&1; then
+        text=$(printf '%s' "$text" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+    else
+        text=$(printf '%s' "$text" | tr -cd '\11\12\15\40-\176\200-\377')
+    fi
 
     if [ ${#text} -le $max_len ]; then
         send_message "$text" "$keyboard"
@@ -330,8 +342,14 @@ _send_part() {
 }
 
 send_message_and_get_id() {
-    local text="$1"
+    local safe_text="$1"
     local keyboard="$2"
+
+    if command -v iconv >/dev/null 2>&1; then
+        safe_text=$(printf '%s' "$safe_text" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+    else
+        safe_text=$(printf '%s' "$safe_text" | tr -cd '\11\12\15\40-\176\200-\377')
+    fi
 
     if [ -f "/etc/telegram_bot/data/.no_reply_kb" ] && [ "$keyboard" = "$MAIN_KEYBOARD" ]; then
         keyboard='{"remove_keyboard":true}'
@@ -341,14 +359,14 @@ send_message_and_get_id() {
     if [ -n "$keyboard" ]; then
         response=$(curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
             -d chat_id="$CHAT_ID" \
-            --data-urlencode text="$text" \
+            --data-urlencode text="$safe_text" \
             -d parse_mode="HTML" \
             -d disable_web_page_preview="true" \
             --data-urlencode "reply_markup=$keyboard" 2>&1)
     else
         response=$(curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
             -d chat_id="$CHAT_ID" \
-            --data-urlencode text="$text" \
+            --data-urlencode text="$safe_text" \
             -d parse_mode="HTML" \
             -d disable_web_page_preview="true" 2>&1)
     fi
@@ -2477,6 +2495,16 @@ _exec_send_output() {
     local cmd="$1"; local out="$2"; local rc="$3"; local msg_id_to_edit="$4"
     local wrap_limit=52; local wrap_indent="   "; local page_size=50; local file_threshold=10000
 
+    # 🚨 ЖЕСТКОЕ ОГРАНИЧЕНИЕ РАЗМЕРА ВЫВОДА (Защита от OOM)
+    if [ ${#out} -gt 5000000 ]; then
+        out="${out:0:5000000}"
+        out="${out}
+
+... ⚠️ (вывод обрезан, превышен 
+безопасный лимит в 5 мб, чтобы не 
+переполнить память роутера)"
+    fi
+
     (
         exec 200>&- 2>/dev/null; trap 'kill $(jobs -p) 2>/dev/null; exit 0' TERM INT; i=0
         while [ "$i" -lt 30 ]; do echo "$(date +%s)" > /tmp/telegram_bot/heartbeat/bot; sleep 10 & wait $! 2>/dev/null; i=$((i + 1)); done
@@ -2502,7 +2530,11 @@ _exec_send_output() {
         if [ -n "$msg_id_to_edit" ]; then curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$msg_id_to_edit" >/dev/null 2>&1; msg_id_to_edit=""; fi
     fi
 	
-    if command -v iconv >/dev/null 2>&1; then out=$(printf '%s\n' "$out" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null); fi
+    if command -v iconv >/dev/null 2>&1; then 
+    out=$(printf '%s\n' "$out" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+else 
+    out=$(printf '%s\n' "$out" | tr -cd '\11\12\15\40-\176\200-\377')
+fi
     local wrap_file="/tmp/telegram_bot/exec/wrap_$$"
     printf '%s\n' "$out" | LC_ALL=C awk -v lim="$wrap_limit" -v indent="$wrap_indent" -v q="'" '
         function escape(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); gsub(q, "\\&#39;", s); return s }
