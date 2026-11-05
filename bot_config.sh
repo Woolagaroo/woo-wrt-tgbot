@@ -363,86 +363,88 @@ _target_get_name() {
 # CURL С ПОВТОРАМИ
 # ============================================================
 curl_retry() {
-    trap 'rm -f /tmp/curl_out_$$_* /tmp/curl_err_$$_*' EXIT
-    local response=""
-    local exit_code=0
-    local total_wait=0
-    local max_total_wait=30
-    local err_attempts=0
-    local max_err_attempts=3
-    local err_delay=1
-    local retry_after=0
+    (
+        trap 'rm -f /tmp/curl_out_$$_* /tmp/curl_err_$$_*' EXIT
+        local response=""
+        local exit_code=0
+        local total_wait=0
+        local max_total_wait=30
+        local err_attempts=0
+        local max_err_attempts=3
+        local err_delay=1
+        local retry_after=0
 
-    while :; do
-        local _curl_tmp="/tmp/curl_out_$$_${RANDOM}"
-        local _curl_err="/tmp/curl_err_$$_${RANDOM}"
-        : > "$_curl_tmp"
-        : > "$_curl_err"
+        while :; do
+            local _curl_tmp="/tmp/curl_out_$$_${RANDOM}"
+            local _curl_err="/tmp/curl_err_$$_${RANDOM}"
+            : > "$_curl_tmp"
+            : > "$_curl_err"
 
-        (
-            exec 200>&- 2>/dev/null
-            curl -s --connect-timeout 5 --max-time 35 -H "Connection: close" "$@" > "$_curl_tmp" 2>"$_curl_err"
-            echo $? > "${_curl_tmp}.rc"
-        ) &
-        local _cpid=$!
+            (
+                exec 200>&- 2>/dev/null
+                curl -s --connect-timeout 5 --max-time 35 -H "Connection: close" "$@" > "$_curl_tmp" 2>"$_curl_err"
+                echo $? > "${_curl_tmp}.rc"
+            ) &
+            local _cpid=$!
 
-        local _cdone=0
-        local _cw=0
-        while [ "$_cw" -lt 40 ]; do
-            if ! kill -0 "$_cpid" 2>/dev/null; then
-                _cdone=1
-                break
+            local _cdone=0
+            local _cw=0
+            while [ "$_cw" -lt 40 ]; do
+                if ! kill -0 "$_cpid" 2>/dev/null; then
+                    _cdone=1
+                    break
+                fi
+                sleep 1
+                _cw=$((_cw + 1))
+            done
+
+            if [ "$_cdone" = "1" ]; then
+                wait "$_cpid" 2>/dev/null
+                exit_code=$(cat "${_curl_tmp}.rc" 2>/dev/null)
+                [ -z "$exit_code" ] && exit_code=0
+                response=$(cat "$_curl_tmp" 2>/dev/null)
+            else
+                kill -9 "$_cpid" 2>/dev/null
+                pkill -9 -P "$_cpid" 2>/dev/null
+                exit_code=1
+                response=""
+                echo "$(date): curl_retry: TIMEOUT (killed) $*" >> /tmp/telegram_bot/logs/bot.log
             fi
-            sleep 1
-            _cw=$((_cw + 1))
-        done
+            rm -f "$_curl_tmp" "$_curl_err" "${_curl_tmp}.rc"
 
-        if [ "$_cdone" = "1" ]; then
-            wait "$_cpid" 2>/dev/null
-            exit_code=$(cat "${_curl_tmp}.rc" 2>/dev/null)
-            [ -z "$exit_code" ] && exit_code=0
-            response=$(cat "$_curl_tmp" 2>/dev/null)
-        else
-            kill -9 "$_cpid" 2>/dev/null
-            pkill -9 -P "$_cpid" 2>/dev/null
-            exit_code=1
-            response=""
-            echo "$(date): curl_retry: TIMEOUT (killed) $*" >> /tmp/telegram_bot/logs/bot.log
-        fi
-        rm -f "$_curl_tmp" "$_curl_err" "${_curl_tmp}.rc"
+            if [ $exit_code -eq 0 ] && [ -n "$response" ]; then
 
-        if [ $exit_code -eq 0 ] && [ -n "$response" ]; then
+                if echo "$response" | jq -e '.error_code == 429' >/dev/null 2>&1; then
+                    retry_after=$(echo "$response" | jq -r '.parameters.retry_after // 3' 2>/dev/null)
+                    case "$retry_after" in ''|*[!0-9]*) retry_after=3 ;; esac
+                    [ "$retry_after" -gt 30 ] && retry_after=30
 
-            if echo "$response" | jq -e '.error_code == 429' >/dev/null 2>&1; then
-                retry_after=$(echo "$response" | jq -r '.parameters.retry_after // 3' 2>/dev/null)
-                case "$retry_after" in ''|*[!0-9]*) retry_after=3 ;; esac
-                [ "$retry_after" -gt 30 ] && retry_after=30
+                    if [ $((total_wait + retry_after)) -gt "$max_total_wait" ]; then
+                        echo "$(date): curl_retry: 429, бюджет ${max_total_wait}s исчерпан" >> /tmp/telegram_bot/logs/bot.log
+                        printf '%s' "$response"
+                        exit 0
+                    fi
 
-                if [ $((total_wait + retry_after)) -gt "$max_total_wait" ]; then
-                    echo "$(date): curl_retry: 429, бюджет ${max_total_wait}s исчерпан" >> /tmp/telegram_bot/logs/bot.log
-                    printf '%s' "$response"
-                    return 0
+                    total_wait=$((total_wait + retry_after))
+                    echo "$(date): curl_retry: 429, ждём ${retry_after}s" >> /tmp/telegram_bot/logs/bot.log
+                    sleep "$retry_after"
+                    continue
                 fi
 
-                total_wait=$((total_wait + retry_after))
-                echo "$(date): curl_retry: 429, ждём ${retry_after}s" >> /tmp/telegram_bot/logs/bot.log
-                sleep "$retry_after"
-                continue
+                printf '%s' "$response"
+                exit 0
             fi
 
-            printf '%s' "$response"
-            return 0
-        fi
-
-        err_attempts=$((err_attempts + 1))
-        if [ "$err_attempts" -ge "$max_err_attempts" ]; then
-            echo "$(date): curl_retry: curl failed after ${err_attempts} попыток (exit=${exit_code})" >> /tmp/telegram_bot/logs/bot.log
-            printf '%s' "$response"
-            return 1
-        fi
-        sleep "$err_delay"
-        err_delay=$((err_delay * 2))
-    done
+            err_attempts=$((err_attempts + 1))
+            if [ "$err_attempts" -ge "$max_err_attempts" ]; then
+                echo "$(date): curl_retry: curl failed after ${err_attempts} попыток (exit=${exit_code})" >> /tmp/telegram_bot/logs/bot.log
+                printf '%s' "$response"
+                exit 1
+            fi
+            sleep "$err_delay"
+            err_delay=$((err_delay * 2))
+        done
+    )
 }
 
 # ============================================================
@@ -981,17 +983,27 @@ _exec_session_send() {
     # Blacklist: интерактивные TTY-программы, имеют сломанный вывод.
     local first_word
     first_word=$(echo "$cmd" | awk '{print $1}')
-    case "$first_word" in
-        vi|vim|nano|pico|ed|emacs|joe|mcedit| \
-        top|htop|atop|iotop|iftop|nethogs| \
-        less|more|most| \
-        mc|nnn|ranger|lf| \
-        screen|tmux|byobu| \
-        watch|tload|slurm|bmon| \
-        alpine|mutt|pine|irssi|weechat| \
-        whiptail|dialog| \
-        lynx|links|w3m|elinks|browsh)
-            _EXEC_OUTPUT="❌ <b>Команда '$first_word' не поддерживается</b>
+
+    local _is_safe_flag=0
+    local _arg
+    for _arg in $cmd; do
+        case "$_arg" in
+            -V|--version|-h|--help|-\?) _is_safe_flag=1; break ;;
+        esac
+    done
+
+    if [ "$_is_safe_flag" = "0" ]; then
+        case "$first_word" in
+            vi|vim|nano|pico|ed|emacs|joe|mcedit| \
+            top|htop|atop|iotop|iftop|nethogs| \
+            less|more|most| \
+            mc|nnn|ranger|lf| \
+            screen|tmux|byobu| \
+            watch|tload|slurm|bmon| \
+            alpine|mutt|pine|irssi|weechat| \
+            whiptail|dialog| \
+            lynx|links|w3m|elinks|browsh)
+                _EXEC_OUTPUT="❌ <b>Команда '$first_word' не поддерживается</b>
 
 Причина: интерактивная TTY-программа, требует интерактивной работы.
 
@@ -1000,9 +1012,10 @@ _exec_session_send() {
   top/htop     →  ps, cat /proc/loadavg
   less/more    →  cat, grep, head, tail
   mc           →  ls, cd, cp, mv, rm"
-            return 3
-            ;;
-    esac
+                return 3
+                ;;
+        esac
+    fi
 
     # Блокируем бесконечные команды с флагом -f
     if echo "$cmd" | grep -qE '(^| )(tail|journalctl|logread|dmesg)( .*)?( -f| --follow| -w| --wait)'; then
@@ -1154,6 +1167,19 @@ _exec_session_send() {
     local last_size="$before_size"
 
     while [ "$i" -lt "$wait_sec" ]; do
+        if ! _exec_session_active; then
+            echo "$(date): _exec_session_send: сессия умерла во время выполнения (сокет/процесс потерян)" >> /tmp/telegram_bot/logs/bot.log
+            echo "idle" > "$_EXEC_STATE_FILE"
+            rm -f "$_EXEC_MARK_FILE"
+            _EXEC_OUTPUT="❌ <b>Сессия неожиданно завершилась</b>
+
+Выполнение команды прервано. PTY-сессия была потеряна."
+            _EXEC_LAST_RC=1
+            _exec_session_stop
+            _exec_session_start
+            return 3
+        fi
+
         echo "$(date +%s)" > /tmp/telegram_bot/heartbeat/bot
 
         if [ $((i % 3)) -eq 0 ] && [ "$i" -gt 0 ] && [ -n "$BOT_TOKEN" ]; then
@@ -1240,10 +1266,14 @@ _exec_session_send() {
                                     sexpect -sock "$_EXEC_SOCK" send $'\x04' 2>/dev/null
                                     ;;
 
-                                "/exec _exit")
+                                "/exec _exit"|"/exec exit")
                                     LAST_UPDATE_ID="$_puid"
                                     echo "$LAST_UPDATE_ID" > "$LAST_UPDATE_FILE"
                                     echo "$(date): peek: _exit — принудительное закрытие" >> /tmp/telegram_bot/logs/bot.log
+                                    
+                                    if [ -n "$_pmsg_id" ]; then echo "$_pmsg_id" >> "/tmp/telegram_bot/exec/pending_user_msgs"; fi
+                                    if [ -f "$_EXEC_WAIT_MSG_FILE" ]; then cat "$_EXEC_WAIT_MSG_FILE" >> "/tmp/telegram_bot/exec/pending_user_msgs"; fi
+                                    
                                     _exec_session_kill 2>/dev/null
                                     _exec_session_stop 2>/dev/null
                                     return 100
@@ -1292,11 +1322,18 @@ _exec_session_send() {
                                     local _st_text="📟 <b>Exec-сессия активна (выполняется команда)</b>
 
 <pre>$_EXEC_STATUS</pre>"
-                                    curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+                                    local _st_kb='{"inline_keyboard":[[{"text":"❌ Закрыть","callback_data":"exec_close"}]]}'
+                                    local _st_resp=$(curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
                                         -d chat_id="$CHAT_ID" \
                                         --data-urlencode text="$_st_text" \
-                                        -d parse_mode="HTML" >/dev/null 2>&1
-                                    echo "$(date): peek: _status обработан в wait loop" >> /tmp/telegram_bot/logs/bot.log
+                                        -d parse_mode="HTML" \
+                                        --data-urlencode "reply_markup=$_st_kb" 2>&1)
+                                    local _new_st_id=$(echo "$_st_resp" | jq -r '.result.message_id // empty' 2>/dev/null)
+                                    
+                                    if [ -n "$_new_st_id" ] && [ -n "$_pmsg_id" ]; then
+                                        echo "$_pmsg_id" > "/tmp/telegram_bot/exec/msgs_${_new_st_id}.txt"
+                                    fi
+                                    echo "$(date): peek: _status обработан с кнопкой" >> /tmp/telegram_bot/logs/bot.log
                                     ;;
 
                                 *)
@@ -1373,23 +1410,23 @@ _exec_session_send() {
         fi
 
         if [ "$quiet_elapsed" -ge "$quiet_sec" ]; then
-            if pgrep -P "$inner_pid" >/dev/null 2>&1; then
-                local _early_child _early_sc
-                _early_child=$(pgrep -P "$inner_pid" 2>/dev/null | head -1)
-                if _is_read_wait "$_early_child"; then
+            local _early_child=$(pgrep -P "$inner_pid" 2>/dev/null | head -1)
+            if [ -z "$_early_child" ]; then
+                if _is_read_wait "$inner_pid"; then
                     local _tail
                     _tail=$(tail -c +$((before_size + 1)) "$_EXEC_LOG" 2>/dev/null)
-                    _EXEC_OUTPUT=$(echo "$_tail" \
-                        | sed -n "/${mark}START/,\$p" \
-                        | sed '1d')
+                    _EXEC_OUTPUT=$(echo "$_tail" | sed -n "/${mark}START/,\$p" | sed '1d')
                     _EXEC_OUTPUT=$(_exec_clean_output "$_EXEC_OUTPUT")
                     echo "waiting" > "$_EXEC_STATE_FILE"
                     return 1
                 fi
-                quiet_elapsed=0
-                sleep 1
-                i=$((i + 1))
-                continue
+            elif _is_read_wait "$_early_child"; then
+                local _tail
+                _tail=$(tail -c +$((before_size + 1)) "$_EXEC_LOG" 2>/dev/null)
+                _EXEC_OUTPUT=$(echo "$_tail" | sed -n "/${mark}START/,\$p" | sed '1d')
+                _EXEC_OUTPUT=$(_exec_clean_output "$_EXEC_OUTPUT")
+                echo "waiting" > "$_EXEC_STATE_FILE"
+                return 1
             else
                 quiet_elapsed=0
                 sleep 1
@@ -1646,10 +1683,23 @@ _exec_autopush_result() {
 # Авто-таймаут сессии.
 _exec_session_check_timeout() {
     _exec_session_active || return 0
-    [ -f "$_EXEC_LAST_FILE" ] || return 0
 
-    local last_ts now idle
-    last_ts=$(cat "$_EXEC_LAST_FILE" 2>/dev/null)
+    local state
+    state=$(cat "$_EXEC_STATE_FILE" 2>/dev/null)
+    if [ "$state" = "running" ]; then
+        return 0
+    fi
+
+    local last_ts="" now idle
+
+    if [ -f "$_EXEC_LAST_FILE" ]; then
+        last_ts=$(cat "$_EXEC_LAST_FILE" 2>/dev/null)
+    fi
+    if [ -z "$last_ts" ] || ! echo "$last_ts" | grep -qE '^[0-9]+$'; then
+        if [ -f "$_EXEC_START_FILE" ]; then
+            last_ts=$(cat "$_EXEC_START_FILE" 2>/dev/null)
+        fi
+    fi
     case "$last_ts" in ''|*[!0-9]*) return 0 ;; esac
 
     now=$(date +%s)
