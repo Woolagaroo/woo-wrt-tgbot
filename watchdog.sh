@@ -95,8 +95,13 @@ while true; do
         NEED_RESTART=1
     else
         _hb_value=$(cat "$HEARTBEAT_FILE" 2>/dev/null | head -1 | tr -d '[:space:]')
-        echo "$_hb_value" | grep -qE '^[0-9]+$' && LAST="$_hb_value"
-        if [ "$LAST" = "0" ] || [ $((NOW - LAST)) -gt $TIMEOUT ]; then NEED_RESTART=1; fi
+        
+        if echo "$_hb_value" | grep -qE '^[0-9]+$' && [ "$_hb_value" -gt 0 ]; then
+            LAST="$_hb_value"
+            if [ $((NOW - LAST)) -gt $TIMEOUT ]; then NEED_RESTART=1; fi
+        else
+            NEED_RESTART=0
+        fi
     fi
 
     if [ $NEED_RESTART -eq 1 ]; then
