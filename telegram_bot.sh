@@ -2486,10 +2486,17 @@ _exec_send_output() {
     local _dw_id_to_clean=""
     if [ -f "$_EXEC_DEFER_FILE" ]; then
         local _dw_id=$(cat "$_EXEC_DEFER_FILE" 2>/dev/null | tr -d '\n\r ')
+        local _skip_cnt=0
+        [ -f "/tmp/telegram_bot/exec/pending_user_msgs" ] && _skip_cnt=$(grep -c . "/tmp/telegram_bot/exec/pending_user_msgs" 2>/dev/null || echo 0)
         if [ -n "$_dw_id" ]; then 
-            curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/editMessageText" -d chat_id="$CHAT_ID" -d message_id="$_dw_id" --data-urlencode text="🕒 <b>Нажатия меню пропущены</b>
+            local _cnt_suffix=""
+            [ "$_skip_cnt" -gt 0 ] 2>/dev/null && _cnt_suffix=" (пропущено: $_skip_cnt)"
+            
+            curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/editMessageText" -d chat_id="$CHAT_ID" -d message_id="$_dw_id" --data-urlencode text="🕒 <b>Нажатия меню пропущены${_cnt_suffix}</b>
 Повторите действия при необходимости." -d parse_mode="HTML" >/dev/null 2>&1
+            
             _dw_id_to_clean="$_dw_id"
+			echo "$_dw_id" > "/tmp/telegram_bot/state/last_defer_msg_id"
         fi
         rm -f "$_EXEC_DEFER_FILE"
         if [ -n "$msg_id_to_edit" ]; then curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$msg_id_to_edit" >/dev/null 2>&1; msg_id_to_edit=""; fi
@@ -2605,6 +2612,22 @@ _run_speedtest_ui() {
 
 handle_command() {
     local text="$1"
+	    if [ -f "/tmp/telegram_bot/state/last_defer_msg_id" ]; then
+        local _last_def=$(cat "/tmp/telegram_bot/state/last_defer_msg_id" 2>/dev/null | tr -d '\n\r ')
+        if [ -n "$_last_def" ]; then
+            curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_last_def" >/dev/null 2>&1 &
+        fi
+        rm -f "/tmp/telegram_bot/state/last_defer_msg_id"
+    fi
+    
+    local _last_out_mid=$(cat /tmp/telegram_bot/exec/output/msg_id.txt 2>/dev/null | tr -d '\n\r ')
+    if [ -n "$_last_out_mid" ] && [ -f "/tmp/telegram_bot/exec/msgs_${_last_out_mid}.txt" ]; then
+        while IFS= read -r _umid; do
+            [ -z "$_umid" ] && continue
+            curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_umid" >/dev/null 2>&1 &
+        done < "/tmp/telegram_bot/exec/msgs_${_last_out_mid}.txt"
+        rm -f "/tmp/telegram_bot/exec/msgs_${_last_out_mid}.txt"
+    fi
     if [ -f "/tmp/telegram_bot/state/ctrlc_msg_id" ]; then
         local _old_ctrlc=$(cat "/tmp/telegram_bot/state/ctrlc_msg_id" 2>/dev/null | tr -d '\n\r ')
         [ -n "$_old_ctrlc" ] && curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_old_ctrlc" >/dev/null 2>&1
@@ -2980,13 +3003,6 @@ ${_err_esc}" -d parse_mode="HTML" 2>&1)
         show_wifi_main; reset_device_selection; return
     fi
 	
-    if [[ "$text" =~ ^/exec[[:space:]]+exit([[:space:]]+[0-9]+)?$ ]]; then
-        if _exec_session_active; then _exec_session_stop 2>/dev/null; fi
-        rm -f /tmp/telegram_bot/exec/wait_msg_id /tmp/telegram_bot/exec/session/last_cmd
-        send_message "✅ <b>Exec-сессия закрыта</b>
-
-Новая будет создана заново при следующей команде."; return
-    fi
     if [ "$text" = "/exec _ctrlc" ]; then
         if [ -n "$_IN_TEXT_MSG_ID" ]; then
             curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_IN_TEXT_MSG_ID" >/dev/null 2>&1
@@ -2996,11 +3012,58 @@ ${_err_esc}" -d parse_mode="HTML" 2>&1)
         if [ -f "/tmp/telegram_bot/state/ctrlc_msg_id" ]; then
             return
         fi
+        
         if _exec_session_active; then
+            local _wait_mid=""
+            [ -f "$_EXEC_WAIT_MSG_FILE" ] && _wait_mid=$(cat "$_EXEC_WAIT_MSG_FILE" 2>/dev/null | tr -d '\n\r ')
+            
+            local _mark=""
+            [ -f "$_EXEC_MARK_FILE" ] && _mark=$(cat "$_EXEC_MARK_FILE" 2>/dev/null)
+            
+            local _cmd_to_show=""
+            [ -f /tmp/telegram_bot/exec/session/last_cmd ] && _cmd_to_show=$(cat /tmp/telegram_bot/exec/session/last_cmd 2>/dev/null)
+            
             _exec_session_kill
+            
+            if [ -n "$_mark" ]; then
+                local _rw=0
+                while [ "$_rw" -lt 5 ]; do
+                    if grep -q "${_mark}END_RC=" "$_EXEC_LOG" 2>/dev/null; then break; fi
+                    sleep 1; _rw=$((_rw + 1))
+                done
+                
+                local _tail_k
+                _tail_k=$(cat "$_EXEC_LOG" 2>/dev/null)
+                
+                _EXEC_LAST_RC=$(echo "$_tail_k" | grep -o "${_mark}END_RC=[0-9]*" | tail -1 | sed 's/.*=//')
+                if [ -z "$_EXEC_LAST_RC" ] || [ "$_EXEC_LAST_RC" = "143" ] || [ "$_EXEC_LAST_RC" = "137" ]; then
+                    _EXEC_LAST_RC=130
+                fi
+                
+                if grep -q "${_mark}END_RC=" "$_EXEC_LOG" 2>/dev/null; then
+                    _EXEC_OUTPUT=$(echo "$_tail_k" | sed -n "/${_mark}START/,/${_mark}END_RC=/p" | sed '1d;$d')
+                else
+                    _EXEC_OUTPUT=$(echo "$_tail_k" | sed -n "/${_mark}START/,\$p" | sed '1d')
+                fi
+                _EXEC_OUTPUT=$(_exec_clean_output "$_EXEC_OUTPUT")
+                _EXEC_OUTPUT=$(printf '%s' "$_EXEC_OUTPUT" | sed '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+            fi
+            
             rm -f "$_EXEC_WAIT_MSG_FILE" /tmp/telegram_bot/exec/session/last_cmd
+            
+            if [ -n "$_wait_mid" ] && declare -F _exec_send_output >/dev/null 2>&1; then
+                [ -z "$_cmd_to_show" ] && _cmd_to_show="(команда)"
+                _exec_send_output "$_cmd_to_show" "${_EXEC_OUTPUT:-(нет вывода)}" "${_EXEC_LAST_RC:-130}" "$_wait_mid"
+            fi
+
+            local _new_table_id=$(cat /tmp/telegram_bot/exec/output/msg_id.txt 2>/dev/null)
             local _cmid=$(send_message_and_get_id "🛑 <b>Команда прервана</b>")
-            [ -n "$_cmid" ] && echo "$_cmid" > /tmp/telegram_bot/state/ctrlc_msg_id
+            if [ -n "$_cmid" ]; then
+                echo "$_cmid" > /tmp/telegram_bot/state/ctrlc_msg_id
+                if [ -n "$_new_table_id" ]; then
+                    echo "$_cmid" >> "/tmp/telegram_bot/exec/msgs_${_new_table_id}.txt"
+                fi
+            fi
         else
             local _cmid=$(send_message_and_get_id "ℹ️ <b>Нет активной команды для прерывания</b>")
             [ -n "$_cmid" ] && echo "$_cmid" > /tmp/telegram_bot/state/ctrlc_msg_id
@@ -3113,14 +3176,49 @@ ${SEP46}</pre>" "$_info_kb")
             echo "$_IN_TEXT_MSG_ID" >> "/tmp/telegram_bot/exec/pending_user_msgs"
             _IN_TEXT_MSG_ID="" 
         fi
-
         _exec_session_check_timeout
+		
         if [ "$_exec_cmd" = "_status" ]; then
-            _exec_session_status
-            if [ "$?" = "0" ]; then send_message "📟 <b>Exec-сессия активна</b>
+            local _st_msg_file="/tmp/telegram_bot/state/exec_status_msg_id"
+            if [ -f "$_st_msg_file" ]; then
+                local _old_st_id=$(cat "$_st_msg_file" 2>/dev/null | tr -d '\n\r ')
+                if [ -n "$_old_st_id" ]; then
+                    curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" \
+                        -d chat_id="$CHAT_ID" -d message_id="$_old_st_id" >/dev/null 2>&1
+                    
+                    local _old_user_msgs="/tmp/telegram_bot/exec/msgs_${_old_st_id}.txt"
+                    if [ -f "$_old_user_msgs" ]; then
+                        while IFS= read -r _umid; do
+                            [ -z "$_umid" ] && continue
+                            curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" \
+                                -d chat_id="$CHAT_ID" -d message_id="$_umid" >/dev/null 2>&1
+                        done < "$_old_user_msgs"
+                        rm -f "$_old_user_msgs"
+                    fi
+                fi
+                rm -f "$_st_msg_file"
+            fi
+
+            local _st_text=""
+            if _exec_session_active; then
+                _exec_session_status
+                _st_text="📟 <b>Exec-сессия активна</b>
 
 <pre>$_EXEC_STATUS</pre>"
-            else send_message "📟 <b>Exec-сессия не активна</b>"; fi
+            else
+                _st_text="📟 <b>Exec-сессия не активна</b>"
+            fi
+
+            local _st_kb='{"inline_keyboard":[[{"text":"❌ Закрыть","callback_data":"exec_close"}]]}'
+            local _new_st_id=$(send_message_and_get_id "$_st_text" "$_st_kb")
+            
+            if [ -n "$_new_st_id" ]; then
+                echo "$_new_st_id" > "$_st_msg_file"
+                if [ -f "/tmp/telegram_bot/exec/pending_user_msgs" ]; then 
+                    cat /tmp/telegram_bot/exec/pending_user_msgs > "/tmp/telegram_bot/exec/msgs_${_new_st_id}.txt" 2>/dev/null
+                    rm -f /tmp/telegram_bot/exec/pending_user_msgs
+                fi
+            fi
             return
         fi
         if [ "$_exec_cmd" = "_eof" ]; then
@@ -3128,9 +3226,42 @@ ${SEP46}</pre>" "$_info_kb")
             sexpect -sock "$_EXEC_SOCK" send $'\x04' 2>/dev/null
             send_message "📤 <b>EOF отправлен (Ctrl+D)</b>"; return
         fi
-        if [ "$_exec_cmd" = "_exit" ]; then
-            if _exec_session_active; then _exec_session_stop; send_message "✅ <b>Exec-сессия закрыта</b>"
-            else send_message "ℹ️ <b>Сессия не была активна</b>"; fi
+        if [ "$_exec_cmd" = "_exit" ] || [ "$_exec_cmd" = "exit" ]; then
+            if ! _exec_session_active && [ -f "/tmp/telegram_bot/state/exec_exit_msg_id" ]; then
+                if [ -n "$_IN_TEXT_MSG_ID" ]; then
+                    curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_IN_TEXT_MSG_ID" >/dev/null 2>&1
+                    _IN_TEXT_MSG_ID=""
+                fi
+                return
+            fi
+
+            local _exit_text=""
+            local _wait_mid=""
+            local _cmd_mid=""
+
+            [ -f "$_EXEC_WAIT_MSG_FILE" ] && _wait_mid=$(cat "$_EXEC_WAIT_MSG_FILE" 2>/dev/null | tr -d '\n\r ')
+            [ -f "/tmp/telegram_bot/exec/pending_user_msgs" ] && _cmd_mid=$(head -1 "/tmp/telegram_bot/exec/pending_user_msgs" 2>/dev/null)
+            rm -f "/tmp/telegram_bot/exec/pending_user_msgs"
+
+            if _exec_session_active; then
+                _exec_session_stop
+                _exit_text="✅ <b>Exec-сессия закрыта</b>"
+            else
+                _exit_text="ℹ️ <b>Сессия не была активна</b>"
+            fi
+
+            local _exit_kb='{"inline_keyboard":[[{"text":"❌ Закрыть","callback_data":"exec_close"}]]}'
+            local _new_exit_id=$(send_message_and_get_id "$_exit_text" "$_exit_kb")
+            
+            if [ -n "$_new_exit_id" ]; then
+                echo "$_new_exit_id" > "/tmp/telegram_bot/state/exec_exit_msg_id"
+                if [ -n "$_cmd_mid" ]; then 
+                    echo "$_cmd_mid" > "/tmp/telegram_bot/exec/msgs_${_new_exit_id}.txt"
+                fi
+                if [ -n "$_wait_mid" ]; then 
+                    echo "$_wait_mid" >> "/tmp/telegram_bot/exec/msgs_${_new_exit_id}.txt"
+                fi
+            fi
             return
         fi
 
@@ -3174,15 +3305,38 @@ ${SEP46}</pre>" "$_info_kb")
             if declare -F _exec_send_output >/dev/null 2>&1; then _exec_send_output "$_exec_cmd" "$_exec_out" "${_EXEC_LAST_RC:-130}" "$_exec_msg_id"; fi
             rm -f "$_EXEC_WAIT_MSG_FILE"
             
+            local _new_table_id=$(cat /tmp/telegram_bot/exec/output/msg_id.txt 2>/dev/null)
             local _cmid=$(send_message_and_get_id "🛑 <b>Команда прервана</b>")
-            [ -n "$_cmid" ] && echo "$_cmid" > /tmp/telegram_bot/state/ctrlc_msg_id
+            if [ -n "$_cmid" ]; then
+                echo "$_cmid" > /tmp/telegram_bot/state/ctrlc_msg_id
+                if [ -n "$_new_table_id" ]; then
+                    echo "$_cmid" >> "/tmp/telegram_bot/exec/msgs_${_new_table_id}.txt"
+                fi
+            fi
             return
         fi
 
         if [ "$_exec_rc" = "3" ]; then
             rm -f "$_EXEC_WAIT_MSG_FILE"
-            if [ -n "$_exec_msg_id" ]; then curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/editMessageText" -d chat_id="$CHAT_ID" -d message_id="$_exec_msg_id" --data-urlencode text="$_EXEC_OUTPUT" -d parse_mode="HTML" > /dev/null 2>&1
-            else send_message "$_EXEC_OUTPUT"; fi
+            local _err_kb='{"inline_keyboard":[[{"text":"❌ Закрыть","callback_data":"exec_close"}]]}'
+            
+            if [ -n "$_exec_msg_id" ]; then 
+                curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/editMessageText" \
+                    -d chat_id="$CHAT_ID" -d message_id="$_exec_msg_id" \
+                    --data-urlencode text="$_EXEC_OUTPUT" -d parse_mode="HTML" \
+                    --data-urlencode "reply_markup=$_err_kb" > /dev/null 2>&1
+                
+                if [ -f "/tmp/telegram_bot/exec/pending_user_msgs" ]; then 
+                    cat /tmp/telegram_bot/exec/pending_user_msgs > "/tmp/telegram_bot/exec/msgs_${_exec_msg_id}.txt" 2>/dev/null
+                    rm -f /tmp/telegram_bot/exec/pending_user_msgs
+                fi
+            else 
+                local _new_id=$(send_message_and_get_id "$_EXEC_OUTPUT" "$_err_kb")
+                if [ -n "$_new_id" ] && [ -f "/tmp/telegram_bot/exec/pending_user_msgs" ]; then 
+                    cat /tmp/telegram_bot/exec/pending_user_msgs > "/tmp/telegram_bot/exec/msgs_${_new_id}.txt" 2>/dev/null
+                    rm -f /tmp/telegram_bot/exec/pending_user_msgs
+                fi
+            fi
             return
         fi
 
@@ -3194,7 +3348,25 @@ ${SEP46}</pre>" "$_info_kb")
 
         local _exec_out="$_EXEC_OUTPUT"
         if [ "$_exec_rc" = "2" ]; then rm -f "$_EXEC_WAIT_MSG_FILE"; send_message "❌ <b>Exec-сессия потеряна</b>" "$_err_kb"; return; fi
-        if [ "$_exec_rc" = "100" ]; then send_message "🛑 <b>Exec-сессия закрыта</b>"; rm -f "$_EXEC_WAIT_MSG_FILE" /tmp/telegram_bot/exec/session/last_cmd; return; fi
+        if [ "$_exec_rc" = "100" ]; then 
+            local _exit_kb='{"inline_keyboard":[[{"text":"❌ Закрыть","callback_data":"exec_close"}]]}'
+            local _new_exit_id=$(send_message_and_get_id "🛑 <b>Exec-сессия закрыта</b>" "$_exit_kb")
+            
+            if [ -n "$_new_exit_id" ]; then
+                echo "$_new_exit_id" > "/tmp/telegram_bot/state/exec_exit_msg_id"
+                
+                if [ -n "$_exec_msg_id" ]; then
+                    echo "$_exec_msg_id" >> "/tmp/telegram_bot/exec/msgs_${_new_exit_id}.txt"
+                fi
+                
+                if [ -f "/tmp/telegram_bot/exec/pending_user_msgs" ]; then 
+                    cat /tmp/telegram_bot/exec/pending_user_msgs >> "/tmp/telegram_bot/exec/msgs_${_new_exit_id}.txt" 2>/dev/null
+                    rm -f /tmp/telegram_bot/exec/pending_user_msgs
+                fi
+            fi
+            rm -f "$_EXEC_WAIT_MSG_FILE" /tmp/telegram_bot/exec/session/last_cmd
+            return
+        fi
 
         if [ "$_exec_rc" = "4" ]; then
             [ -z "$_exec_out" ] && _exec_out="(команда выполняется)"
@@ -3860,14 +4032,15 @@ MAC-адрес добавлен в черный список.</pre>"
     if [ "$callback_data" = "close_error" ]; then
         curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$message_id" >/dev/null 2>&1
         curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" -d text="✅ Окно закрыто" >/dev/null 2>&1
-        return
+        rm -f "/tmp/telegram_bot/state/exec_status_msg_id"
+		return
     fi
 
     if [ "$callback_data" = "status_close" ]; then
         curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$message_id" >/dev/null 2>&1
         rm -f /tmp/telegram_bot/state/status_msg_id
         send_menu
-        curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" -d text="📊 Статус закрыт" >/dev/null 2>&1
+        curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" -d text="📊 Статус бота закрыт" >/dev/null 2>&1
         return
     fi
 
@@ -3906,7 +4079,7 @@ MAC-адрес добавлен в черный список.</pre>"
         rm -f "$UPTIME_MSG_ID_FILE"
         UPTIME_MSG_ID=""
         send_menu
-        curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" -d text="❌ Окно закрыто" >/dev/null 2>&1
+        curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" -d text="🕒 Время работы закрыто" >/dev/null 2>&1
         return
     fi
 
@@ -3959,7 +4132,7 @@ MAC-адрес добавлен в черный список.</pre>"
     fi
 
     if [ "$callback_data" = "critical_dl_toggle" ]; then
-        if [ -f "/etc/telegram_bot/data/.log_history_disabled" ]; then
+        if [ "$(uci -q get telegram_bot.main.log_history_disabled 2>/dev/null)" = "1" ]; then
             curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" --data-urlencode "text=⚠️ Сбор логов отключен. Включите: /event history on" -d show_alert="true" > /dev/null 2>&1
             return
         fi
@@ -4062,6 +4235,7 @@ ${SEP46}</pre>"
     fi
 
     if [ "$callback_data" = "exec_close" ]; then
+        rm -f "/tmp/telegram_bot/state/exec_status_msg_id"
         local _msg_file="/tmp/telegram_bot/exec/msgs_${message_id}.txt"
         if [ -f "$_msg_file" ]; then
             while read -r _umid; do [ -n "$_umid" ] && curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$_umid" >/dev/null 2>&1 & done < "$_msg_file"
@@ -4862,7 +5036,8 @@ ${_e_esc}"; return; fi
     fi
 
     if [ "$callback_data" = "disable_confirm" ]; then
-        curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" > /dev/null 2>&1
+       if [ -n "$message_id" ]; then curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteMessage" -d chat_id="$CHAT_ID" -d message_id="$message_id" > /dev/null 2>&1; fi       
+	   curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/answerCallbackQuery" -d callback_query_id="$callback_id" > /dev/null 2>&1
         touch /etc/telegram_bot/.bot_disabled; chmod 600 /etc/telegram_bot/.bot_disabled
         curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" -d chat_id="$CHAT_ID" --data-urlencode text="🛑 <b>Бот полностью отключён</b>
 
@@ -5408,6 +5583,8 @@ while true; do
     fi
     echo "$(date +%s)" > /tmp/telegram_bot/heartbeat/bot
 
+    _exec_session_check_timeout
+	
     _exec_autopush_result
 
     if [ -f /tmp/telegram_bot/exec/wait_msg_id ]; then _poll_timeout=8; _poll_max=15; else _poll_timeout=30; _poll_max=35; fi
