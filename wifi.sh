@@ -260,7 +260,7 @@ _wifi_input_finalize() {
 _wifi_is_valid_input() {
     local str="$1"
     case "$str" in
-        *[$'\001'-$'\037']*|*$'\177'*)
+        *[$'\001'-$'\037']*|*$'\177'*|*'"'*|*'\\'*)
             return 1 ;;
     esac
     return 0
@@ -3478,11 +3478,11 @@ handle_wifi_text_input() {
 Сократите имя или используйте латиницу."
                 return
             fi
-            if ! _wifi_is_valid_input "$text"; then
-                _send_input_error "Разрешены: латиница, кирилица, цифры, 
-спецсимволы. Введите верно:"
-                return
-            fi
+if ! _wifi_is_valid_input "$text"; then
+    _send_input_error "Запрещены кавычки (\"), слэши (\\) и 
+управляющие символы. Введите верно:"
+    return
+fi
 
             if [ "$mode" = "edit_ssid" ]; then
                 _wifi_input_finalize
