@@ -523,10 +523,17 @@ get_ssid() {
 # ОТПРАВКА В TELEGRAM
 # ============================================================
 send_tg() {
+    local safe_text="$1"
+    if command -v iconv >/dev/null 2>&1; then
+        safe_text=$(printf '%s' "$safe_text" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+    else
+        safe_text=$(printf '%s' "$safe_text" | tr -cd '\11\12\15\40-\176\200-\377')
+    fi
+
     local response
     response=$(curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
         -d chat_id="$CHAT_ID" \
-        --data-urlencode text="$1" \
+        --data-urlencode text="$safe_text" \
         -d parse_mode="HTML" \
         -d disable_web_page_preview="true" 2>&1)
     if ! echo "$response" | jq -e '.ok' >/dev/null 2>&1; then
@@ -538,12 +545,18 @@ send_tg() {
 }
 
 send_tg_kb() {
-    local text="$1"
+    local safe_text="$1"
     local keyboard="$2"
+    if command -v iconv >/dev/null 2>&1; then
+        safe_text=$(printf '%s' "$safe_text" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+    else
+        safe_text=$(printf '%s' "$safe_text" | tr -cd '\11\12\15\40-\176\200-\377')
+    fi
+
     local response
     response=$(curl_retry -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
         -d chat_id="$CHAT_ID" \
-        --data-urlencode text="$text" \
+        --data-urlencode text="$safe_text" \
         -d parse_mode="HTML" \
         -d disable_web_page_preview="true" \
         --data-urlencode "reply_markup=$keyboard" 2>&1)
@@ -1005,30 +1018,64 @@ _exec_session_send() {
             lynx|links|w3m|elinks|browsh)
                 _EXEC_OUTPUT="❌ <b>Команда '$first_word' не поддерживается</b>
 
-Причина: интерактивная TTY-программа, требует интерактивной работы.
+Причина: интерактивная TTY-программа, 
+требует интерактивной работы.
 
 Что использовать вместо:
-  vi/vim/nano  →  cat, sed, awk
-  top/htop     →  ps, cat /proc/loadavg
-  less/more    →  cat, grep, head, tail
-  mc           →  ls, cd, cp, mv, rm"
+  vi/vim/nano   →   cat, sed, awk
+  top/htop        →   ps, cat /proc/loadavg
+  less/more      →   cat, grep, head, tail
+  mc                 →   ls, cd, cp, mv, rm"
                 return 3
                 ;;
         esac
     fi
 
-    # Блокируем бесконечные команды с флагом -f
-    if echo "$cmd" | grep -qE '(^| )(tail|journalctl|logread|dmesg)( .*)?( -f| --follow| -w| --wait)'; then
-        _EXEC_OUTPUT="❌ <b>Команда с флагом отслеживания (-f / -w) не поддерживается</b>
+    # 🚨 Блокируем бесконечные устройства и команды (Защита от OOM)
+    if echo "$cmd" | grep -qE '(cat|dd|head|tail|od|hexdump|strings|cp|tar|zip|less|more)( .*)?/dev/(u?random|zero|full)'; then
+        _EXEC_OUTPUT="❌ <b>Команда заблокирована 
+(Защита от перезагрузки)</b>
 
-Причина: такая команда будет работать бесконечно, 
-блокируя exec-сессию и не давая получить результат.
+Чтение из <code>/dev/urandom</code>, <code>/dev/random</code>, 
+<code>/dev/zero</code> или <code>/dev/full</code> генерирует 
+бесконечный поток данных. 
+
+Это приведет к переполнению 
+оперативной памяти (OOM) и аварийной 
+перезагрузке роутера."
+        return 3
+    fi
+
+    if echo "$cmd" | grep -qE '(^| )dd .*(if|of)=/dev/(u?random|zero)'; then
+        _EXEC_OUTPUT="❌ <b>Команда dd с устройствами /dev/ 
+заблокирована</b>
+Это приведет к переполнению памяти 
+или порче файловой системы."
+        return 3
+    fi
+
+    if [ "$first_word" = "yes" ]; then
+        _EXEC_OUTPUT="❌ <b>Команда 'yes' заблокирована</b>
+Команда генерирует бесконечный текст 
+и забьет всю память. Если нужно 
+проверить скрипт, используйте: 
+<code>yes | head -n 10</code>"
+        return 3
+    fi
+
+    if echo "$cmd" | grep -qE '(^| )(tail|journalctl|logread|dmesg)( .*)?( -f| --follow| -w| --wait)'; then
+        _EXEC_OUTPUT="❌ <b>Команда с флагом отслеживания 
+(-f / -w) не поддерживается</b>
+
+Причина: такая команда будет работать 
+бесконечно, блокируя exec-сессию и 
+не давая получить результат.
 
 Что использовать вместо:
-  tail -f file       →  tail -n 50 file
-  journalctl -f   →  journalctl -n 50
-  logread -f      →  logread | tail -n 50
-  dmesg -w      →  dmesg | tail -n 50"
+  tail -f file         →   tail -n 50 file
+  journalctl -f    →   journalctl -n 50
+  logread -f       →   logread | tail -n 50
+  dmesg -w       →   dmesg | tail -n 50"
         return 3
     fi
 
