@@ -17,19 +17,17 @@ start_service() {
 
     mkdir -p /tmp/telegram_bot/flags
 
+    if [ -f "$DISABLE_FLAG" ]; then
+        echo "⏸  Бот отключён флагом — автозапуск и уведомление пропущены" >&2
+        return 0
+    fi
+
     if [ "$uptime_sec" -lt 180 ]; then
         touch /tmp/telegram_bot/flags/first_boot
 
         if [ -x "$BOT_DIR/boot_notify.sh" ]; then
             setsid "$BOT_DIR/boot_notify.sh" </dev/null >/dev/null 2>&1 &
         fi
-
-        if [ -f "$DISABLE_FLAG" ]; then
-            echo "⏸  Бот отключён флагом — автозапуск пропущен" >&2
-            return 0
-        fi
-    else
-        rm -f "$DISABLE_FLAG"
     fi
 
     procd_open_instance
