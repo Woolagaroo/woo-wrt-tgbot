@@ -15,8 +15,8 @@ LOGFILE="/tmp/uninstall_bot.log"
 echo "=== $(date): начало удаления бота ===" > "$LOGFILE"
 
 # Флаг
-touch /etc/telegram_bot/.bot_disabled
-chmod 600 /etc/telegram_bot/.bot_disabled
+touch /etc/telegram_bot/.bot_disabled 2>/dev/null
+chmod 600 /etc/telegram_bot/.bot_disabled 2>/dev/null
 echo "флаг установлен" >> "$LOGFILE"
 
 # Watchdog
@@ -85,11 +85,12 @@ rm -f /etc/telegram_bot/explorer.sh
 rm -f /etc/telegram_bot/bot_config.sh
 rm -f /etc/telegram_bot/watchdog.sh
 rm -f /etc/telegram_bot/restart_bot.sh
+rm -f /etc/telegram_bot/update.sh
+rm -f /etc/telegram_bot/uninstall_bot.sh
+rm -f /etc/telegram_bot/VERSION
 rm -f /etc/telegram_bot/.env
 rm -f /etc/telegram_bot/boot_notify.sh
 rm -f /etc/telegram_bot/.bot_disabled
-rmdir /etc/telegram_bot/data 2>/dev/null
-rmdir /etc/telegram_bot 2>/dev/null
 
 # Данные и состояние
 rm -f /etc/telegram_bot/data/.last_update_id
@@ -122,6 +123,16 @@ rm -f /var/lock/restart_bot.lock /var/lock/restart_event.lock 2>/dev/null
 rm -f /var/lock/wifi_fix.lock /var/lock/explorer_size_cache.lock 2>/dev/null
 
 echo "временные файлы удалены" >> "$LOGFILE"
+
+# Финальная зачистка: удалить всё оставшееся и пустые папки
+rm -rf /etc/telegram_bot 2>/dev/null
+if [ -d /etc/telegram_bot ]; then
+    echo "⚠️ Папка /etc/telegram_bot не удалена, содержимое:" >> "$LOGFILE"
+    ls -la /etc/telegram_bot >> "$LOGFILE" 2>&1
+else
+    echo "✅ /etc/telegram_bot удалена полностью" >> "$LOGFILE"
+fi
+
 echo "=== $(date): удаление завершено ===" >> "$LOGFILE"
 
 # Самоудаление
