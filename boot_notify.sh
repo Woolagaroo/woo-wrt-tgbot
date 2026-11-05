@@ -8,6 +8,10 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 check_required_utilities || exit 1
 
+if [ -f "/etc/telegram_bot/.bot_disabled" ]; then
+    exit 0
+fi
+
 for i in $(seq 1 30); do
     if ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1; then break; fi
     sleep 1
