@@ -1585,7 +1585,7 @@ _critical_get_log_stats() {
         if (match(line, /^([0-9]{4})-([0-9]{2})-([0-9]{2})[T ]([0-9]{2}):([0-9]{2}):([0-9]{2})/)) {
             return substr(line, RSTART, 4) substr(line, RSTART+5, 2) substr(line, RSTART+8, 2) substr(line, RSTART+11, 2) substr(line, RSTART+14, 2) substr(line, RSTART+17, 2)
         }
-        split(line, p, " ")
+        split(line, p, /[ \t]+/)
         if (p[1] ~ /^[A-Za-z]{3}$/ && p[2] ~ /^[A-Za-z]{3}$/ && p[3] ~ /^[0-9]+$/ && p[4] ~ /^[0-9]{2}:[0-9]{2}:[0-9]{2}$/ && p[5] ~ /^[0-9]{4}$/) {
             mon=p[2]; day=p[3]; time=p[4]; yr=p[5]
         } else if (p[1] ~ /^[A-Za-z]{3}$/ && p[2] ~ /^[0-9]+$/ && p[3] ~ /^[0-9]{2}:[0-9]{2}:[0-9]{2}$/) {
@@ -1705,10 +1705,11 @@ _critical_keyboard_main() {
     fi
 
     if [ -n "$nav_buttons" ]; then
+        nav_buttons="${nav_buttons%,}"
         keyboard="$keyboard[$nav_buttons],"
     fi
 
-    if [ "$page" -eq 1 ] && [ -f "/tmp/telegram_bot/critical/dl_menu_open" ] && [ -n "$newest_ts" ] && [ "$newest_ts" != "0" ]; then
+    if [ "$page" -eq 1 ] && [ "$total" -gt 0 ] && [ -f "/tmp/telegram_bot/critical/dl_menu_open" ] && [ -n "$newest_ts" ] && [ "$newest_ts" != "0" ]; then
         local t_buttons=""
         if [ "$show_set1" = "1" ]; then
             for h in 1 2 3 4 5; do
@@ -1725,7 +1726,7 @@ _critical_keyboard_main() {
             for h in 6 12 24 48 72; do
                 local icon="🔴"
                 local cb_action="critical_dl_red_${h}h_${filter_value}"
-                if [ "$h" -ge "$h_min" ] 2>/dev/null && [ "$h" -le "$h_max" ] 2>/dev/null; then
+                if [ "$h" -ge "$h_min" ] 2>/dev/null; then
                     icon="🟢"
                     cb_action="critical_dl_${h}h_${filter_value}"
                 fi
@@ -1787,6 +1788,23 @@ ${separator}
 # ============================================================
 # ЖУРНАЛ СОБЫТИЙ — ГЛАВНЫЙ ОБРАБОТЧИК
 # ============================================================
+_critical_get_raw_logs() {
+    local hist_file="/tmp/telegram_bot/critical/history.log"
+    local logs=""
+    if [ "$(uci -q get telegram_bot.main.log_history_disabled 2>/dev/null)" != "1" ] && [ -f "$hist_file" ] && [ -s "$hist_file" ]; then
+        logs=$(tail -n 3000 "$hist_file")
+    fi
+    
+    if [ -z "$logs" ]; then
+        if logread -l 1 >/dev/null 2>&1; then
+            logs=$(logread -l 500)
+        else
+            logs=$(logread | tail -500)
+        fi
+    fi
+    printf '%s\n' "$logs"
+}
+
 critical_main() {
     local action="$1"
     local param="$2"
@@ -1799,12 +1817,7 @@ critical_main() {
     "init")
         rm -f /tmp/telegram_bot/critical/dl_menu_open
 
-        local raw_logs
-        if logread -l 1 >/dev/null 2>&1; then
-            raw_logs=$(logread -l 500)
-        else
-            raw_logs=$(logread | tail -500)
-        fi
+        local raw_logs=$(_critical_get_raw_logs)
 
         local awk_output=$(echo "$raw_logs" | awk "$AWK_CLASSIFY"'
         BEGIN {
@@ -1928,12 +1941,7 @@ critical_main() {
 
         rm -f "$state_file" "$state_file.counts" 2>/dev/null
 
-        local raw_logs
-        if logread -l 1 >/dev/null 2>&1; then
-            raw_logs=$(logread -l 500)
-        else
-            raw_logs=$(logread | tail -500)
-        fi
+        local raw_logs=$(_critical_get_raw_logs)
 
         local awk_output=$(echo "$raw_logs" | awk "$AWK_CLASSIFY"'
         BEGIN {
@@ -3135,6 +3143,7 @@ get_bot_status() {
     fi
 
     # 4. Exec-сессия
+    _exec_session_check_timeout
     local _exec_st="🔴 Не активна"
     if _exec_session_active; then
         local _estate=$(cat "$_EXEC_STATE_FILE" 2>/dev/null)
